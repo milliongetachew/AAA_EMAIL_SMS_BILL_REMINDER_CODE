@@ -1,0 +1,1103 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    MD572EM.
+       INSTALLATION.  ACSC.
+       AUTHOR.        C. ARRASTIA.
+       DATE-WRITTEN.  03/14/2014.
+       DATE-COMPILED.
+      *****************************************************************
+      *  IMPORTANT  : INPUT FILE MUST BE SORTED BY CLUB               *
+      *****************************************************************
+      *  PROGRAM    : MD572EM.                                        *
+      *  PURPOSE    : THIS PROGRAM WILL CREATE EXTRACT FILES FOR      *
+      *               CARD REJECT EMAIL.  THE INPUT TO THS PROGRAM IS *
+      *               FROM FINANCE WHEN THE CREDIT CARD IS DECLINED   *
+      *               AT PAYMENT.                                     *
+      *                                                               *
+      *  CALLED SUBROUTINES: MD610BR, MC501BCD, MD999CK, MD380MA,     *
+      *                      MD642BR, MD699BR, MD930BR                *
+      *                                                               *
+      *===============================================================*
+      *                                                               *
+      *                 M A I N T E N A N C E   L O G                 *
+      *                 -----------------------------                 *
+      *                                                               *
+      *   DATE    PROGRAMMER  DESCRIPTION                             *
+      * --------  ----------  --------------------------------------- *
+      * 02/27/14  C ARRASTIA  SR1011408 - DECLINE CARD EMAIL INITIAL  *
+      *                                   INSTALL                     *
+      * 02/27/17  PHIL BEARD  MEM-16-06 - LIMIT TO AC BILL PLAN. MP   *
+      *                                   WILL HAVE NEW PROGRAM       *
+      * 03/28/17  MINH DIEP   INC574770 - REMOVE EMAIL WITH SEMICOLON *
+      * 03/23/17  PHIL BEARD  MNT-16-06 - ONLY EXCLUDE MP BILL PLAN   *
+      * 07/24/17  SFAVRIN     INC572157 - FIX NXT EVNT SELECT TO RETURN
+      *                                   ONLY 1 ROW.                 *
+      * 10/11/17  MQ          INC767771 - VALIDATE MEMBER BEF GETTING *
+      *                                   CUSTOMER EMAIL              *
+      *****************************************************************
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+       INPUT-OUTPUT SECTION.
+
+       FILE-CONTROL.
+
+           SELECT CLUB-FILE-IN              ASSIGN TO MD572I.
+           SELECT EMAIL-FILE-OUT            ASSIGN TO MD572O1.
+           SELECT REPORT-FILE-OUT           ASSIGN TO MD572O2.
+
+
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  CLUB-FILE-IN
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  CLUB-REC-IN                  PIC X(80).
+
+       FD  EMAIL-FILE-OUT
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  EMAIL-REC-OUT                PIC X(240).
+
+       FD  REPORT-FILE-OUT
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  REPORT-REC-OUT               PIC X(100).
+
+       WORKING-STORAGE SECTION.
+
+       01  WS-BEGIN                         PIC X(13)
+                                                VALUE 'MD572EM BEGIN'.
+       01  MISC.
+           05  WS-PGM-NAME                  PIC X(08) VALUE 'MD572EM '.
+           05  WS-MD380MA                   PIC X(08) VALUE 'MD380MA'.
+           05  WS-MD610BR                   PIC X(08) VALUE 'MD610BR '.
+           05  WS-MD699BR                   PIC X(08) VALUE 'MD699BR '.
+           05  WS-MC501BCD                  PIC X(08) VALUE 'MC501BCD'.
+           05  WS-MD999CK                   PIC X(08) VALUE 'MD999CK '.
+           05  WS-MD930BR                   PIC X(08) VALUE 'MD930BR '.
+           05  WS-MD642BR                   PIC X(08) VALUE 'MD642BR '.
+           05  WS-AMOUNT-DUE                PIC 9(04)V99 VALUE ZEROES.
+           05  WS-CLUB-C                    PIC X(03) VALUE SPACES.
+           05  WS-CLUB-NAME                 PIC X(10) VALUE SPACES.
+           05  WS-PROCESS-DT                PIC X(10) VALUE SPACES.
+           05  WS-CUST-ID                   PIC 9(15) VALUE ZEROES.
+           05  WS-CARD-TYPE-LONG            PIC X(12) VALUE SPACES.
+           05  WS-CURRENT-DATE              PIC X(10) VALUE SPACES.
+           05  WS-CURRENT-TIME              PIC X(08) VALUE SPACES.
+           05  WS-COMMA                     PIC X(01) VALUE ','.
+           05  WS-COMMA-FIRST               PIC X(02) VALUE ",'".
+           05  WS-COMMA-LAST                PIC X(02) VALUE "',".
+           05  WS-COMMA-2                   PIC X(02) VALUE ','.
+           05  WS-EMAIL-PERCENT             PIC 9(09)V9(04) COMP-3
+                                                      VALUE ZEROES.
+           05  WS-POINT-005                 PIC V9(4) COMP-3
+                                                      VALUE .005.
+           05  WS-EMAIL-PERCENT-FRMT        PIC ZZZZZ9.99.
+           05  WS-MEMBER-FRMT               PIC ZZZZZZZZZ9.
+           05  WS-EMAIL-FRMT                PIC ZZZZZZZZZ9.
+           05  WS-YEAR-SERV-9               PIC 9(04).
+           05  WS-YEAR-SERV                 PIC ZZZ9.
+           05  WS-AAA-JOIN-YR-X             PIC X(04).
+           05  WS-AAA-JOIN-YR REDEFINES WS-AAA-JOIN-YR-X
+                                            PIC 9(04).
+           05  WS-EXP-D                     PIC X(10).
+           05  FILLER REDEFINES WS-EXP-D.
+               10  WS-EXP-MONTH             PIC 9(02).
+               10  FILLER                   PIC X(01).
+               10  WS-EXP-DAY               PIC 9(02).
+               10  FILLER                   PIC X(01).
+               10  WS-EXP-YEAR              PIC 9(04).
+      * INC574770
+           05  WS-TALLY-CNT                 PIC 9(02) VALUE 0.
+
+       01  IDX-CLUB-INFO.
+           05  IDX-TOT                      PIC 9(02) VALUE 0.
+           05  IDX-C-MAX                    PIC 9(02) VALUE 15.
+           05  IDX-CLUB-DATA OCCURS 15 INDEXED BY IDX-C.
+               10  IDX-CLUB-CODE            PIC X(03).
+               10  IDX-CLUB-NAME            PIC X(10).
+               10  IDX-CLUB-DECLINE         PIC 9(9).
+               10  IDX-CLUB-EMAIL           PIC 9(9).
+               10  IDX-CLUB-NO-EMAIL        PIC 9(9).
+               10  IDX-CLUB-SKIP            PIC 9(9).
+               10  IDX-CLUB-PAID            PIC 9(9).
+               10  IDX-CLUB-CANCEL          PIC 9(9).
+
+       01  FLAGS-AND-SWITCHES.
+           05  MD572I2-EOF-SW               PIC X(01) VALUE 'N'.
+               88  MD572I2-EOF                        VALUE 'Y'.
+           05  MD572I1-EOF-SW               PIC X(01) VALUE 'N'.
+               88  MD572I1-EOF                        VALUE 'Y'.
+           05  PROCESS-SW                   PIC X(01) VALUE 'Y'.
+               88  CONTINUE-PROCESS                   VALUE 'Y'.
+               88  BYPASS-RECORD                      VALUE 'N'.
+
+       01  CLUB-RECORD.
+           05  CLUB-IN                      PIC X(03).
+           05  FILLER                       PIC X(77).
+
+       01  COUNTERS.
+           05  TOT-READ-CNTR                PIC 9(09) VALUE ZEROES.
+           05  READ-CNTR                    PIC 9(09) VALUE ZEROES.
+           05  TOT-DECLINE-CARD-CNTR        PIC 9(09) VALUE ZEROES.
+           05  DECLINE-CARD-CNTR            PIC 9(09) VALUE ZEROES.
+           05  TOT-WRITE-EMAIL-CNTR         PIC 9(09) VALUE ZEROES.
+           05  WRITE-EMAIL-CNTR             PIC 9(09) VALUE ZEROES.
+           05  TOT-NO-EMAIL-CNTR            PIC 9(09) VALUE ZEROES.
+           05  NO-EMAIL-CNTR                PIC 9(09) VALUE ZEROES.
+           05  TOT-SKIP-CNTR                PIC 9(09) VALUE ZEROES.
+           05  SKIP-CNTR                    PIC 9(09) VALUE ZEROES.
+           05  TOT-PAID-CNTR                PIC 9(09) VALUE ZEROES.
+           05  PAID-CNTR                    PIC 9(09) VALUE ZEROES.
+           05  TOT-CANCEL-CNTR              PIC 9(09) VALUE ZEROES.
+           05  CANCEL-CNTR                  PIC 9(09) VALUE ZEROES.
+           05  DISP-READ-CNTR               PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+           05  DISP-WRITE-CNTR              PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+           05  DISP-NO-EMAIL-CNTR           PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+           05  DISP-SKIP-CNTR               PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+           05  DISP-PAID-CNTR               PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+           05  DISP-CANCEL-CNTR             PIC ZZZ,ZZZ,ZZ9
+                                                      VALUE SPACES.
+      *****************************************************************
+      *----------------------------------------------------------------
+      *               COPYBOOK AREA                                   *
+      *----------------------------------------------------------------
+      *   MEMBER INPUT RECORD LAYOUT
+      *----------------------------------------------------------------
+       01  MD572-INPUT.
+       COPY CRD206C.
+      /
+      *----------------------------------------------------------------
+      *   MEMBER OUTPUT RECORD LAYOUT
+      *----------------------------------------------------------------
+       01  MD572-OUTPUT.
+       COPY MRD572C.
+      /
+      *----------------------------------------------------------------
+      *    MD380MA LINK DATA - HOUSEHOLD INFORMATION
+      *----------------------------------------------------------------
+       01 MD380C-RECORD.
+       COPY MRD380C.
+      /
+      *----------------------------------------------------------------
+      *    MD642BR LINK DATA - MBR INFO INFORMATION
+      *----------------------------------------------------------------
+       01  MD442MB-LINK-DATA.
+       COPY MRD4421C.
+      /
+      *----------------------------------------------------------------
+      *    MC501BCD LINK DATA - CUSTOMER INFORMATION
+      *----------------------------------------------------------------
+       01  MC501-INPUT-OUTPUT.
+       COPY MAC501C.
+      /
+      *----------------------------------------------------------------
+      *    MD699BR LINK DATA - CLUB NAME
+      *----------------------------------------------------------------
+       01  MD699-INPUT-OUTPUT-RECORD.
+       COPY MRDR03C.
+      /
+      *----------------------------------------------------------------
+      *    MD610BR LINK DATA - MPD PAYMENT IN HIERARCHY ORDER
+      *----------------------------------------------------------------
+       01  MD610-LINK-DATA.
+       COPY MRD610C.
+      /
+      *----------------------------------------------------------------
+      *    MD999CK LINK DATA - 16 DIGIT MEMBERSHIP NUMBER
+      *----------------------------------------------------------------
+       01  MD999-LINK-DATA.
+       COPY MRD999CK.
+      /
+      ******************************************************************
+      *   MD930BR  LINK DATA - PROCESSING DATE                         *
+      ******************************************************************
+       01 MD930-LINK-DATA.
+          COPY MRD930C.
+      *----------------------------------------------------------------
+      *    MD960BR LINK DATA
+      *----------------------------------------------------------------
+       01  MD960-MPD-DATA.
+       COPY MRD960C.
+      /
+      *----------------------------------------------------------------
+      *    MD900 AND MD901 ERROR DATA FIELDS.
+      *----------------------------------------------------------------
+       01  MD900-ERROR-DATA.
+       COPY MRD900C.
+      /
+       01  MD901-ERROR-DATA.
+       COPY MRD901C.
+      /
+      *****************************************************************
+      *    SQL INCLUDES                                               *
+      *****************************************************************
+           EXEC SQL
+                INCLUDE SQLCA
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE EMSWKCCR
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE MBRNXEVT
+           END-EXEC.
+
+      *****************************************************************
+      *    SQL CURSOR                                                 *
+      *****************************************************************
+      *  MEM-16-06 ADD BILL_PLAN_C TO WHERE CLAUSE
+      *****************************************************************
+           EXEC SQL
+               DECLARE CURSOR-WORKTABLE CURSOR WITH HOLD FOR
+                 SELECT CLUB_C,
+                        MBR_N,
+                        EMAIL_TEXT
+                 FROM EMS_WORK_CCREJ
+                 WHERE PROCESS_D  <= :WS-PROCESS-DT
+                   AND BILL_PLAN_C < 'MP'
+                 ORDER BY CLUB_C
+           END-EXEC.
+      /
+       LINKAGE SECTION.
+      /
+      *****************************************************************
+       PROCEDURE DIVISION.
+      *****************************************************************
+       0000-MAINLINE.
+
+           PERFORM A0000-INITIALIZE.
+
+           PERFORM B0000-PROCESS-MEMBER-RECS
+             UNTIL MD572I1-EOF.
+
+           PERFORM Z0000-WRAP-UP.
+      /
+      ******************************************************************
+      * INITIALIZE DATA, GET CURRENT DATE, OPEN FILES                  *
+      ******************************************************************
+       A0000-INITIALIZE.
+
+           PERFORM A1000-GET-CURRENT-DATE.
+
+           DISPLAY '**************************************************'.
+           DISPLAY '*      PROGRAM MD572EM SUMMARY                   *'.
+           DISPLAY '**************************************************'.
+
+           PERFORM A2000-OPEN-FILES.
+
+           PERFORM A3000-GET-PROCESS-DATE.
+
+           PERFORM A3500-OPEN-CURSOR.
+
+           PERFORM A4000-GET-ALL-CLUBS.
+
+           INITIALIZE REPORT-REC-OUT.
+
+           STRING 'DATE      '
+                   WS-COMMA-FIRST
+                  'CLUB'
+                   WS-COMMA-LAST
+                  'CLUB NAME'
+                   WS-COMMA
+                  'DECLINED CREDIT CARD CNT'
+                   WS-COMMA
+                  'MEMBER EMAIL COUNT'
+                   WS-COMMA
+                  '% OF EMAILS'
+                   WS-COMMA
+                  DELIMITED BY SIZE     INTO REPORT-REC-OUT
+           END-STRING.
+
+           WRITE REPORT-REC-OUT.
+
+           PERFORM R0000-FETCH-MEMBER.
+      /
+      ******************************************************************
+      * GET CURRENT DB2 DATE/TIME                                      *
+      ******************************************************************
+       A1000-GET-CURRENT-DATE.
+
+           EXEC SQL
+              SET :WS-CURRENT-DATE   = CHAR(CURRENT DATE, ISO),
+                  :WS-CURRENT-TIME   = CHAR(CURRENT TIME, ISO)
+           END-EXEC.
+
+           IF  SQLCODE = +0
+               DISPLAY
+                  '**************************************************'
+               DISPLAY '         PROGRAM ' WS-PGM-NAME ' STARTED    '
+               DISPLAY '         RUN DATE & TIME: ' WS-CURRENT-DATE ,
+                       ' ',                         WS-CURRENT-TIME
+               DISPLAY
+                  '**************************************************'
+           ELSE
+               DISPLAY '***********************************************'
+               DISPLAY '**** SELECTION OF CURRENT DATE ERROR IN A1000- '
+               DISPLAY '***********************************************'
+               MOVE 'CURRENT DB2 DATE SELECT PROBLEM'
+                                             TO MD900-ERROR-MSG-1
+               MOVE SQLCODE                  TO MD900-SQLCODE
+               MOVE SQLCA                    TO MD900-SQLCA
+               MOVE 'A1000-GET-CURRENT-DATE' TO MD900-PARAGRAPH-NAME
+               SET  MD900-DB2-FUNCTION-SET   TO TRUE
+               SET  MD900-RC-DB2-SQL-ERROR   TO TRUE
+               MOVE 'SET CURRENT DATE '      TO MD900-TABLE-CURSOR-NAME
+               PERFORM Z9999-ERROR
+           END-IF.
+      /
+      ******************************************************************
+      * OPEN INPUT AND OUTPUT FILE.                                    *
+      ******************************************************************
+       A2000-OPEN-FILES.
+
+           OPEN INPUT  CLUB-FILE-IN
+                OUTPUT EMAIL-FILE-OUT
+                       REPORT-FILE-OUT.
+      /
+      ******************************************************************
+      * CALL MD930BR TO GET BATCH PROCESS DATE                         *
+      ******************************************************************
+       A3000-GET-PROCESS-DATE.
+
+           INITIALIZE MD930-LINK-DATA
+                      MD900-ERROR-DATA.
+
+           CALL WS-MD930BR                   USING MD930-LINK-DATA
+                                                   MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               MOVE MD930-ISO-DT             TO WS-PROCESS-DT
+           ELSE
+               MOVE 'A3000-GET-PROCESS-DATE' TO MD900-PARAGRAPH-NAME
+               MOVE WS-MD930BR               TO MD900-PGM-NAME
+               PERFORM Z9999-ERROR
+           END-IF.
+      /
+      ******************************************************************
+      * OPEN CUSOR.                                                    *
+      ******************************************************************
+       A3500-OPEN-CURSOR.
+
+           EXEC SQL
+             OPEN CURSOR-WORKTABLE
+           END-EXEC.
+
+           IF SQLCODE NOT = 0
+               DISPLAY '***********************************************'
+               DISPLAY '**** OPEN CURSOR ERROR IN A3500-               '
+               DISPLAY '***********************************************'
+               MOVE 'OPEN CURSOR PROBLEM            '
+                                             TO MD900-ERROR-MSG-1
+               MOVE SQLCODE                  TO MD900-SQLCODE
+               MOVE SQLCA                    TO MD900-SQLCA
+               MOVE 'A3500-OPEN-CURSOR     ' TO MD900-PARAGRAPH-NAME
+               SET  MD900-DB2-FUNCTION-OPEN  TO TRUE
+               SET  MD900-RC-DB2-SQL-ERROR   TO TRUE
+               MOVE 'CURSOR-WORKTABLE '      TO MD900-TABLE-CURSOR-NAME
+               PERFORM Z9999-ERROR
+           END-IF.
+
+      /
+      ******************************************************************
+      * READ INPUT FILE OF ALL CLUBS TO PROCESS                        *
+      ******************************************************************
+       A4000-GET-ALL-CLUBS.
+           PERFORM UNTIL MD572I2-EOF
+              READ CLUB-FILE-IN INTO CLUB-RECORD
+                   AT END
+                      SET MD572I2-EOF             TO TRUE
+              END-READ
+              IF  NOT MD572I2-EOF
+                  ADD 1                 TO  IDX-TOT
+                  SET IDX-C             TO  IDX-TOT
+                  IF IDX-TOT > IDX-C-MAX
+                     DISPLAY '-MD572EM- TABLE OVERFLOW '
+                     DISPLAY '-MD572EM- CLUB TABLE    -'
+                     DISPLAY '-MD572EM- EXPAND OCCURENCES '
+                     DISPLAY '-MD572EM- ONLY 15 ALLOCATED '
+                     MOVE 'TABLE OVERFLOW ON CLUB ENTRIES'
+                                                TO MD900-ERROR-MSG-1
+                     MOVE 'A4000-GET-ALL-CLUBS' TO MD900-PARAGRAPH-NAME
+                     PERFORM Z9999-ERROR
+                  ELSE
+                     MOVE CLUB-IN       TO IDX-CLUB-CODE(IDX-C)
+                     MOVE SPACES        TO IDX-CLUB-NAME(IDX-C)
+                     MOVE ZEROES        TO IDX-CLUB-DECLINE(IDX-C)
+                                           IDX-CLUB-EMAIL(IDX-C)
+                                           IDX-CLUB-NO-EMAIL(IDX-C)
+                                           IDX-CLUB-SKIP(IDX-C)
+                                           IDX-CLUB-PAID(IDX-C)
+                                           IDX-CLUB-CANCEL(IDX-C)
+                     PERFORM A5000-GET-CLUB-NAME
+                     MOVE MD03-CLUB-NAME TO IDX-CLUB-NAME(IDX-C)
+                  END-IF
+              END-IF
+           END-PERFORM.
+
+      ******************************************************************
+      * CALL MD699BR TO GET ALL CLUB NAMES                             *
+      ******************************************************************
+       A5000-GET-CLUB-NAME.
+
+           INITIALIZE MD699-INPUT-OUTPUT-RECORD
+                      MD900-ERROR-DATA.
+
+           MOVE CLUB-IN                      TO MD03-CLUB-CODE.
+           MOVE WS-PROCESS-DT                TO MD03-PROCESSING-DATE.
+
+           CALL  WS-MD699BR                  USING
+                                             MD699-INPUT-OUTPUT-RECORD
+                                             MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               CONTINUE
+           ELSE
+               MOVE 'A5000-GET-CLUB-NAME'    TO MD900-PARAGRAPH-NAME
+               DISPLAY 'CLUB CODE: '         CLUB-IN
+               MOVE WS-MD699BR               TO MD900-PGM-NAME
+               PERFORM Z9999-ERROR
+           END-IF.
+
+      ******************************************************************
+      * PROCESS MEMBER RECORDS FROM THE ULOAD FILES                    *
+      ******************************************************************
+       B0000-PROCESS-MEMBER-RECS.
+
+           PERFORM B2000-CHECK-CARD-TYPE.
+
+           IF CONTINUE-PROCESS
+              PERFORM B2500-CHECK-BILL-PLAN
+           END-IF.
+
+           IF CONTINUE-PROCESS
+              PERFORM B3000-GET-TOTAL-DUE
+           END-IF.
+
+           IF CONTINUE-PROCESS
+             IF WS-AMOUNT-DUE = 0 THEN
+      * THE MEMBER HAS PAID DURING THE 2 DAY WINDOW BETWEEN THE
+      * CREDIT CARD REJECT AND NOW.  DELETE THE ROW FROM THE
+      * WORK TABLE AND SKIP THIS RECORD
+               PERFORM B7000-DELETE-CCREJ-ROW
+               ADD 1 TO IDX-CLUB-PAID (IDX-C)
+               SET BYPASS-RECORD TO TRUE
+             ELSE
+               IF FK-MBR-BILL-PLAN = 'AC' THEN
+      * IF THE BILL PLAN IS STILL AC AND MEMBERSHIP STILL UNPAID
+      * LEAVE ON WORK TABLE TO PICK UP THE NEXT DAY
+                   ADD 1 TO IDX-CLUB-SKIP (IDX-C)
+                   SET BYPASS-RECORD TO TRUE
+               END-IF
+             END-IF
+           END-IF.
+
+           IF CONTINUE-PROCESS
+              PERFORM B4000-GET-EXPDT-YRSERV
+           END-IF.
+
+           IF CONTINUE-PROCESS
+              PERFORM B5000-GET-16DIG-MBRSHP
+           END-IF.
+
+      * 10/11/17 - MQ START - MOVED FROM BEGINNING OF PARAGRAPH
+      *                     - TO AFTER MEMBER VALIDATION
+           IF CONTINUE-PROCESS
+              PERFORM B1000-GET-CUSTOMER
+              IF MC501-O-EMAIL > SPACES AND
+                 (MC501-O-EMAIL-VALID-C = '1' OR '3')
+                  CONTINUE
+              ELSE
+                 ADD 1 TO IDX-CLUB-NO-EMAIL (IDX-C)
+                 SET BYPASS-RECORD         TO TRUE
+                 PERFORM B7000-DELETE-CCREJ-ROW
+              END-IF
+           END-IF.
+      * 10/11/17 - END
+
+           IF CONTINUE-PROCESS
+              PERFORM B6000-WRITE-EMAIL-REC
+           END-IF.
+
+           IF CONTINUE-PROCESS
+              PERFORM B7000-DELETE-CCREJ-ROW
+           END-IF.
+
+           PERFORM R0000-FETCH-MEMBER.
+      /
+      ******************************************************************
+      *  CALL MC501BCD TO GET CUSTOMER DATA INCLUDING EMAIL            *
+      ******************************************************************
+       B1000-GET-CUSTOMER.
+
+           INITIALIZE MC501-INPUT-OUTPUT
+                      MD900-ERROR-DATA.
+
+           MOVE 1                          TO MC501-I-LOB-CODE.
+           MOVE C206-CLUB-CODE             TO MC501-I-CLUB-CODE.
+           MOVE C206-MEMBR-ID              TO MC501-I-PRODUCT-NUMBER.
+           MOVE WS-PGM-NAME                TO MC501-I-CALLING-PROGRAM.
+           MOVE '00'                       TO MC501-I-ROLE-CODE.
+           MOVE 'Y'                        TO
+                                           MC501-I-REQ-ALL-CUST-DATA.
+
+           CALL WS-MC501BCD                  USING MC501-INPUT-OUTPUT.
+
+           IF MC501-O-RETURN-CODE = ZEROES
+              MOVE MC501-O-CUST-NUMBER        TO WS-CUST-ID
+           ELSE
+              SET BYPASS-RECORD               TO TRUE
+              IF MC501-O-RETURN-MESSAGE = SPACES
+                 MOVE 'PROBLEM WITH CALL TO MC501BCD'
+                                              TO MD900-ERROR-MSG-1
+              ELSE
+                 MOVE MC501-O-RETURN-MESSAGE  TO MD900-ERROR-MSG-1
+              END-IF
+              DISPLAY '*** CUSTOMER NOT FOUND ****'
+              DISPLAY 'CLUB CODE : '          C206-CLUB-CODE
+              DISPLAY 'MEMBER ID : '          C206-MEMBR-ID
+              MOVE C206-CLUB-CODE             TO MD900-KEY-DATA-LN(1)
+              MOVE C206-MEMBR-ID              TO MD900-KEY-DATA-LN(2)
+              MOVE MC501-O-RETURN-CODE        TO MD900-KEY-DATA-LN(3)
+              MOVE 'B1000-GET-CUSTOMER'       TO MD900-PARAGRAPH-NAME
+              MOVE WS-MC501BCD                TO MD900-PGM-NAME
+              PERFORM Z9999-ERROR
+           END-IF.
+
+      ******************************************************************
+      *  CHECK CARD TYPE                                               *
+      ******************************************************************
+       B2000-CHECK-CARD-TYPE.
+
+           MOVE SPACES                     TO WS-CARD-TYPE-LONG.
+
+           EVALUATE C206-CARD-TYPE
+              WHEN 'VSN'
+              WHEN 'VSA'
+                MOVE 'VISA'                TO WS-CARD-TYPE-LONG
+              WHEN 'MCN'
+              WHEN 'MCA'
+                MOVE 'MASTERCARD'          TO WS-CARD-TYPE-LONG
+              WHEN 'AM'
+                MOVE 'AMEX'                TO WS-CARD-TYPE-LONG
+              WHEN 'DIS'
+                MOVE 'DISCOVER'            TO WS-CARD-TYPE-LONG
+              WHEN OTHER
+                MOVE 'UNKNOWN'             TO WS-CARD-TYPE-LONG
+           END-EVALUATE.
+
+      ******************************************************************
+      *  CHECK BILL PLAN                                               *
+      ******************************************************************
+       B2500-CHECK-BILL-PLAN.
+
+           MOVE C206-CLUB-CODE TO FK-MHH-ACL-CLUB-C
+           MOVE C206-MEMBR-ID TO FK-MHH-MBRSHP-N
+
+           EXEC SQL
+               SELECT FK_MBR_BILL_PLAN
+               INTO  :FK-MBR-BILL-PLAN
+               FROM   MBRSHP_NEXT_EVENT
+               WHERE  FK_MHH_ACL_CLUB_C = :FK-MHH-ACL-CLUB-C
+               AND    FK_MHH_MBRSHP_N   = :FK-MHH-MBRSHP-N
+               FETCH FIRST 1 ROW ONLY
+           END-EXEC.
+
+           EVALUATE SQLCODE
+           WHEN 0
+               CONTINUE
+           WHEN 100
+      * IF NOT FOUND, ASSUME MEMBERSHIP WAS CANCELLED
+      * DELETE EMS_WORK_CCREJ ROW
+               PERFORM B7000-DELETE-CCREJ-ROW
+               ADD 1 TO IDX-CLUB-CANCEL (IDX-C)
+               SET BYPASS-RECORD TO TRUE
+           WHEN OTHER
+               DISPLAY '***********************************************'
+               DISPLAY '**** SELECT ERROR IN R0000-                    '
+               DISPLAY '***********************************************'
+               MOVE 'SELECT PROBLEM                 '
+                                             TO MD900-ERROR-MSG-1
+               MOVE SQLCODE                  TO MD900-SQLCODE
+               MOVE SQLCA                    TO MD900-SQLCA
+               MOVE 'R0000-FETCH-MEMBER    ' TO MD900-PARAGRAPH-NAME
+               SET  MD900-RC-DB2-SQL-ERROR   TO TRUE
+               SET  MD900-DB2-FUNCTION-SELECT TO TRUE
+               MOVE 'MBRSHP_NEXT_EVENT'      TO MD900-TABLE-CURSOR-NAME
+               PERFORM Z9999-ERROR
+           END-EVALUATE.
+
+      ******************************************************************
+      *  CALL MD610BR TO GET TOTAL DUE AMOUNT                          *
+      ******************************************************************
+       B3000-GET-TOTAL-DUE.
+
+           INITIALIZE  MD610-LINK-DATA
+                       MD960-MPD-DATA
+                       MD900-ERROR-DATA
+                       WS-AMOUNT-DUE.
+
+           MOVE C206-CLUB-CODE               TO MD610-CLUB-CODE.
+           MOVE C206-MEMBR-ID                TO MD610-MEMBERSHIP-NUMBER.
+           MOVE WS-PROCESS-DT                TO MD610-PROC-DATE.
+           SET MD610-BATCH                   TO TRUE.
+           SET NO-ALLOC-PRIORITY             TO TRUE.
+           MOVE WS-PGM-NAME                  TO MD610-CALLING-PROG.
+
+           CALL WS-MD610BR                   USING MD610-LINK-DATA
+                                                  MD960-MPD-DATA
+                                                  MD900-ERROR-DATA.
+           IF  MD900-RC-OK
+               MOVE MD610-TOTAL-DUE          TO WS-AMOUNT-DUE
+           ELSE
+               MOVE C206-TXN-AMOUNT          TO WS-AMOUNT-DUE
+           END-IF.
+      /
+      ******************************************************************
+      *  GET HOUSEHOLD TABLE TO RETRIEVE YEARS OF SERVICE AND EXPDT    *
+      ******************************************************************
+       B4000-GET-EXPDT-YRSERV.
+
+           PERFORM B4100-GET-EXPIRATION.
+
+           PERFORM B4200-GET-JOIN-YEAR.
+
+           COMPUTE WS-YEAR-SERV-9  = WS-EXP-YEAR - WS-AAA-JOIN-YR
+           IF WS-YEAR-SERV-9  = 0
+              MOVE 1                        TO WS-YEAR-SERV-9
+           END-IF
+           MOVE WS-YEAR-SERV-9              TO WS-YEAR-SERV.
+
+      ******************************************************************
+      *  GET EXPIRATION DATE USING MD380MA CALL                        *
+      ******************************************************************
+       B4100-GET-EXPIRATION.
+
+           INITIALIZE MD380C-RECORD.
+           SET MD380-READ-REQUESTED            TO TRUE.
+           SET MD380-READ-CLUB-MBR             TO TRUE.
+           MOVE C206-CLUB-CODE                 TO MD380-CLUB-C.
+           MOVE C206-MEMBR-ID                  TO MD380-MEMBER-NUMBER.
+           MOVE WS-PGM-NAME                    TO MD380-DA-PROG-M.
+
+           CALL WS-MD380MA USING MD380C-RECORD.
+
+           IF MD380-NO-ERRORS
+              MOVE MD380-CUR-TERM-EXP-D      TO WS-EXP-D
+           ELSE
+              SET BYPASS-RECORD              TO TRUE
+              DISPLAY '***********************************************'
+              DISPLAY '**** CALL TO MD380MA TO GET HOUSEHOLD ERR    - '
+              DISPLAY '***********************************************'
+              MOVE MD380-ERROR-PROBLEM-NAME  TO MD900-ERROR-MSG-1
+              MOVE 'B4100-GET-EXPIRATION'    TO MD900-PARAGRAPH-NAME
+              IF MD380-SQL-ERROR
+                 SET MD900-RC-DB2-SQL-ERROR  TO TRUE
+                 MOVE MD380-ERROR-SQLCODE    TO SQLCODE
+                                                MD900-SQLCODE
+              ELSE
+                 MOVE MD380-RETURN-CODE      TO MD900-RETURN-CODE
+              END-IF
+              PERFORM Z9999-ERROR
+           END-IF.
+      /
+      ******************************************************************
+      *  GET JOIN YEAR USING MD642BR.                                  *
+      ******************************************************************
+       B4200-GET-JOIN-YEAR.
+
+           INITIALIZE                       MD442MB-LINK-DATA.
+           SET  MD442MB-READ-REQUESTED      TO TRUE
+           MOVE C206-CLUB-CODE              TO MD442MB-CLUB-CODE
+           MOVE C206-MEMBR-ID               TO MD442MB-MEMBER-NBR
+           MOVE '00'                        TO MD442MB-MEMBER-ROLE
+           MOVE WS-PROCESS-DT               TO MD442MB-EFF-DATE
+
+           INITIALIZE                       MD900-ERROR-DATA.
+
+           CALL WS-MD642BR          USING MD442MB-LINK-DATA.
+
+           IF MD442MB-NO-ERRORS
+              MOVE MD442MB-AAA-JOIN-YEAR     TO WS-AAA-JOIN-YR-X
+           ELSE
+              SET BYPASS-RECORD              TO TRUE
+              IF MD442MB-DATA-NOT-FOUND
+                 DISPLAY '*???                              '
+                 DISPLAY '*??? MBR INFO NOT FND - CANCELLED '
+                         '  ' C206-CLUB-CODE
+                         '  ' C206-MEMBR-ID
+              ELSE
+                 DISPLAY '********************************************'
+                 DISPLAY '**** CALL TO MD642BR TO GET MBRINFO ERR - '
+                 DISPLAY '********************************************'
+                 MOVE MD442MB-ERROR-MESSAGE     TO MD900-ERROR-MSG-1
+                 MOVE 'B4200-GET-JOIN-YEAR'     TO MD900-PARAGRAPH-NAME
+                 IF MD442MB-SQL-ERROR
+                    SET MD900-RC-DB2-SQL-ERROR  TO TRUE
+                    MOVE MD442MB-MEMBER-SQLCODE TO SQLCODE
+                                                   MD900-SQLCODE
+                 ELSE
+                    MOVE MD442MB-RETURN-CODE    TO MD900-RETURN-CODE
+                 END-IF
+                 PERFORM Z9999-ERROR
+              END-IF
+           END-IF.
+
+      ******************************************************************
+      *  CALL MD999CK TO GET 16 DIGIT MEMBERSHIP NUMBER                *
+      ******************************************************************
+       B5000-GET-16DIG-MBRSHP.
+
+           INITIALIZE MD999-LINK-DATA.
+
+           MOVE C206-CLUB-CODE               TO MD999CK-CLUB-CODE.
+           MOVE C206-MEMBR-ID (2:8)          TO MD999CK-MEMBER.
+           MOVE WS-PGM-NAME                  TO MC501-I-CALLING-PROGRAM.
+           MOVE '0'                          TO MD999CK-ROLE-CODE.
+
+      *** NOTE: THERE IS NO RETURN CODE OR ERROR INFO COMING BACK FROM
+      *** MD999CK. IT EITHER ABENDS OR RETURNS THE DATA.
+
+           CALL WS-MD999CK                   USING MD999-LINK-DATA.
+      /
+      ******************************************************************
+      *  WRITE EMAIL FOR CREDIT CARD DECLINE MEMBERS                   *
+      ******************************************************************
+       B6000-WRITE-EMAIL-REC.
+
+           INITIALIZE MD572-OUTPUT.
+
+           MOVE MD930-MMDDYYYY             TO MD572-EXTRACT-DT.
+           MOVE C206-CLUB-CODE             TO MD572-CLUB-C.
+           MOVE MD999CK-CHECK-DIGIT        TO MD572-MBRSHP-NBR.
+           MOVE WS-EXP-D                   TO MD572-EXP-DATE.
+           MOVE WS-AMOUNT-DUE              TO MD572-TOTAL-DUE.
+           MOVE MC501-O-CUST-NUMBER        TO MD572-CUSTOMER-NBR.
+           MOVE MC501-O-SUFFIX             TO MD572-NAME-SUFFIX.
+           MOVE MC501-O-FIRST-NAME         TO MD572-FIRST-NAME.
+           MOVE MC501-O-LAST-NAME          TO MD572-LAST-NAME.
+           MOVE MC501-O-EMAIL              TO MD572-EMAIL.
+           MOVE MC501-O-EMAIL-VALID-C      TO MD572-EMAIL-VALID-CD.
+           MOVE WS-CARD-TYPE-LONG          TO MD572-CREDIT-CARD-TYPE.
+           MOVE C206-LAST4                 TO MD572-CREDIT-CARD-LAST4.
+           STRING C206-EXP-DATE(1:2) '/'
+                  C206-EXP-DATE(7:4)
+           DELIMITED BY SIZE             INTO MD572-CREDIT-CARD-EXP-D
+           MOVE WS-YEAR-SERV               TO MD572-YEARS-SERVICE.
+      * INC574770
+           INITIALIZE WS-TALLY-CNT.
+           INSPECT MD572-OUTPUT TALLYING WS-TALLY-CNT FOR ALL ';'.
+
+           IF WS-TALLY-CNT > 0
+              ADD 1                        TO IDX-CLUB-NO-EMAIL (IDX-C)
+           ELSE
+              MOVE ';'                     TO MD572-SEPARATOR-1
+                                              MD572-SEPARATOR-2
+                                              MD572-SEPARATOR-3
+                                              MD572-SEPARATOR-4
+                                              MD572-SEPARATOR-5
+                                              MD572-SEPARATOR-6
+                                              MD572-SEPARATOR-7
+                                              MD572-SEPARATOR-8
+                                              MD572-SEPARATOR-9
+                                              MD572-SEPARATOR-10
+                                              MD572-SEPARATOR-11
+                                              MD572-SEPARATOR-12
+                                              MD572-SEPARATOR-13
+                                              MD572-SEPARATOR-14
+                                              MD572-SEPARATOR-15
+              WRITE EMAIL-REC-OUT        FROM MD572-OUTPUT
+              ADD 1                        TO IDX-CLUB-EMAIL (IDX-C)
+           END-IF.
+      /
+      ******************************************************************
+      * DELETE EMS_WORK_CCREJ ROW                                      *
+      ******************************************************************
+       B7000-DELETE-CCREJ-ROW.
+
+           EXEC SQL
+             DELETE FROM EMS_WORK_CCREJ
+                    WHERE CLUB_C = :CLUB-C
+                      AND MBR_N = :MBR-N
+           END-EXEC.
+
+           EVALUATE SQLCODE
+             WHEN 0
+               CONTINUE
+             WHEN OTHER
+               DISPLAY '***********************************************'
+               DISPLAY '**** DELETE ERROR IN B7000-                    '
+               DISPLAY '***********************************************'
+               MOVE 'DELETE PROBLEM                 '
+                                             TO MD900-ERROR-MSG-1
+               MOVE SQLCODE                  TO MD900-SQLCODE
+               MOVE SQLCA                    TO MD900-SQLCA
+               MOVE 'B7000-DELETE-CCREJ-ROW' TO MD900-PARAGRAPH-NAME
+               SET  MD900-RC-DB2-SQL-ERROR   TO TRUE
+               SET  MD900-DB2-FUNCTION-DELETE TO TRUE
+               MOVE 'EMS_WORK_CCREJ   '      TO MD900-TABLE-CURSOR-NAME
+               PERFORM Z9999-ERROR
+           END-EVALUATE.
+
+           PERFORM B8000-COMMIT.
+      /
+      ******************************************************************
+      * COMMIT DB2 DELETES                                             *
+      ******************************************************************
+       B8000-COMMIT.
+           EXEC SQL
+             COMMIT
+           END-EXEC.
+      /
+      ******************************************************************
+      * READ MEMBER FILE                                               *
+      ******************************************************************
+       R0000-FETCH-MEMBER.
+
+           SET CONTINUE-PROCESS                TO TRUE.
+           EXEC SQL
+             FETCH CURSOR-WORKTABLE
+              INTO :CLUB-C,
+                   :MBR-N,
+                   :EMAIL-TEXT
+           END-EXEC.
+
+      *    READ MEMBER-FILE-IN
+      *         INTO MD572-INPUT
+      *         AT END
+      *            SET MD572I1-EOF             TO TRUE
+      *    END-READ.
+
+           EVALUATE SQLCODE
+             WHEN 0
+               MOVE EMAIL-TEXT-TEXT TO MD572-INPUT
+             WHEN 100
+               SET MD572I1-EOF TO TRUE
+             WHEN OTHER
+               DISPLAY '***********************************************'
+               DISPLAY '**** FETCH ERROR IN R0000-                     '
+               DISPLAY '***********************************************'
+               MOVE 'OPEN CURSOR PROBLEM            '
+                                             TO MD900-ERROR-MSG-1
+               MOVE SQLCODE                  TO MD900-SQLCODE
+               MOVE SQLCA                    TO MD900-SQLCA
+               MOVE 'R0000-FETCH-MEMBER    ' TO MD900-PARAGRAPH-NAME
+               SET  MD900-RC-DB2-SQL-ERROR   TO TRUE
+               SET  MD900-DB2-FUNCTION-FETCH TO TRUE
+               MOVE 'CURSOR-WORKTABLE '      TO MD900-TABLE-CURSOR-NAME
+               PERFORM Z9999-ERROR
+           END-EVALUATE.
+
+           IF  NOT MD572I1-EOF
+               MOVE C206-CLUB-CODE             TO WS-CLUB-C
+               SET IDX-C                       TO 1
+               SEARCH IDX-CLUB-DATA VARYING IDX-C
+               AT END
+                  MOVE 'R0000-FETCH-MEMBER    ' TO MD900-PARAGRAPH-NAME
+                  MOVE 'INVALID CLUB INPUT '   TO MD900-ERROR-MSG-1
+                  MOVE WS-MD930BR              TO MD900-PGM-NAME
+                  PERFORM Z9999-ERROR
+               WHEN WS-CLUB-C = IDX-CLUB-CODE (IDX-C)
+                  ADD 1            TO IDX-CLUB-DECLINE (IDX-C)
+               END-SEARCH
+           END-IF.
+      /
+      ******************************************************************
+      * CLOSE FILES, DISPLAY COUNTS                                    *
+      ******************************************************************
+       Z0000-WRAP-UP.
+
+           DISPLAY '                '.
+           DISPLAY '**********************************************'.
+           PERFORM VARYING IDX-C FROM 1 BY 1 UNTIL
+              IDX-C > IDX-TOT
+              MOVE IDX-CLUB-CODE (IDX-C)     TO WS-CLUB-C
+              MOVE IDX-CLUB-NAME (IDX-C)     TO WS-CLUB-NAME
+              MOVE IDX-CLUB-DECLINE (IDX-C)  TO DECLINE-CARD-CNTR
+              MOVE IDX-CLUB-DECLINE (IDX-C)  TO READ-CNTR
+              ADD DECLINE-CARD-CNTR          TO TOT-DECLINE-CARD-CNTR
+              ADD READ-CNTR                  TO TOT-READ-CNTR
+              MOVE IDX-CLUB-EMAIL   (IDX-C)  TO WRITE-EMAIL-CNTR
+              ADD WRITE-EMAIL-CNTR           TO TOT-WRITE-EMAIL-CNTR
+              MOVE IDX-CLUB-NO-EMAIL(IDX-C)  TO NO-EMAIL-CNTR
+              ADD NO-EMAIL-CNTR              TO TOT-NO-EMAIL-CNTR
+              MOVE IDX-CLUB-SKIP    (IDX-C)  TO SKIP-CNTR
+              ADD SKIP-CNTR                  TO TOT-SKIP-CNTR
+              MOVE IDX-CLUB-PAID    (IDX-C)  TO PAID-CNTR
+              ADD PAID-CNTR                  TO TOT-PAID-CNTR
+              MOVE IDX-CLUB-CANCEL  (IDX-C)  TO CANCEL-CNTR
+              ADD CANCEL-CNTR                TO TOT-CANCEL-CNTR
+
+              COMPUTE DECLINE-CARD-CNTR = DECLINE-CARD-CNTR -
+                SKIP-CNTR - PAID-CNTR - CANCEL-CNTR
+
+              PERFORM Z1000-WRITE-REPORT
+           END-PERFORM.
+
+           COMPUTE TOT-DECLINE-CARD-CNTR = TOT-DECLINE-CARD-CNTR -
+             TOT-SKIP-CNTR - TOT-PAID-CNTR - TOT-CANCEL-CNTR.
+
+           PERFORM Z2000-WRITE-REPORT-TOTAL.
+
+           CLOSE CLUB-FILE-IN
+                 EMAIL-FILE-OUT
+                 REPORT-FILE-OUT.
+
+           DISPLAY '                                                  '.
+           DISPLAY '**************************************************'.
+           DISPLAY '*      PROGRAM MD572EM COMPLETED SUCCESSFULLY    *'.
+           DISPLAY '**************************************************'.
+
+           GOBACK.
+      /
+      ***************************************************************
+      * WRITE REPORT                                                *
+      ***************************************************************
+       Z1000-WRITE-REPORT.
+
+           IF DECLINE-CARD-CNTR > 0
+              COMPUTE WS-EMAIL-PERCENT ROUNDED =
+                  (WRITE-EMAIL-CNTR / DECLINE-CARD-CNTR * 100)
+                                    + WS-POINT-005
+           ELSE
+              MOVE 0                    TO WS-EMAIL-PERCENT
+           END-IF.
+
+           MOVE DECLINE-CARD-CNTR       TO WS-MEMBER-FRMT.
+           MOVE READ-CNTR               TO DISP-READ-CNTR.
+           MOVE WRITE-EMAIL-CNTR        TO WS-EMAIL-FRMT
+                                           DISP-WRITE-CNTR.
+           MOVE NO-EMAIL-CNTR           TO DISP-NO-EMAIL-CNTR.
+           MOVE SKIP-CNTR               TO DISP-SKIP-CNTR.
+           MOVE PAID-CNTR               TO DISP-PAID-CNTR.
+           MOVE CANCEL-CNTR             TO DISP-CANCEL-CNTR.
+           MOVE WS-EMAIL-PERCENT        TO WS-EMAIL-PERCENT-FRMT.
+
+           STRING  MD930-PROC-DATE
+                   WS-COMMA-FIRST
+                   WS-CLUB-C
+                   WS-COMMA-LAST
+                   WS-CLUB-NAME
+                   WS-COMMA
+                   WS-MEMBER-FRMT
+                   WS-COMMA
+                   WS-EMAIL-FRMT
+                   WS-COMMA
+                   WS-EMAIL-PERCENT-FRMT
+                   '%'
+                   WS-COMMA
+                   DELIMITED BY SIZE INTO REPORT-REC-OUT
+           END-STRING.
+
+           WRITE REPORT-REC-OUT.
+
+           ADD 1                       TO IDX-CLUB-EMAIL (IDX-C).
+
+           DISPLAY '  RECORDS PROCESSED FOR CLUB : ' WS-CLUB-C.
+           DISPLAY '  TOTAL INPUT RECORDS READ   : ' DISP-READ-CNTR.
+           DISPLAY '                                 ---------'.
+           DISPLAY '  TOTAL EMAIL RECORDS WRITTEN: ' DISP-WRITE-CNTR.
+           DISPLAY '  TOTAL RECORDS NO E-MAIL    : ' DISP-NO-EMAIL-CNTR.
+           DISPLAY '  TOTAL RECORDS PAID         : ' DISP-PAID-CNTR.
+           DISPLAY '  TOTAL RECORDS CANCELLED    : ' DISP-CANCEL-CNTR.
+           DISPLAY '  TOTAL RECORDS SKIPPED      : ' DISP-SKIP-CNTR.
+           DISPLAY '**********************************************'.
+      /
+      ***************************************************************
+      * WRITE REPORT TOTAL                                          *
+      ***************************************************************
+       Z2000-WRITE-REPORT-TOTAL.
+
+           IF TOT-DECLINE-CARD-CNTR > 0
+              COMPUTE WS-EMAIL-PERCENT ROUNDED =
+                  (TOT-WRITE-EMAIL-CNTR / TOT-DECLINE-CARD-CNTR * 100)
+                                    + WS-POINT-005
+           ELSE
+              MOVE 0                    TO WS-EMAIL-PERCENT
+           END-IF.
+
+           MOVE TOT-DECLINE-CARD-CNTR       TO WS-MEMBER-FRMT.
+           MOVE TOT-READ-CNTR               TO DISP-READ-CNTR.
+           MOVE TOT-WRITE-EMAIL-CNTR        TO WS-EMAIL-FRMT
+                                               DISP-WRITE-CNTR.
+           MOVE TOT-NO-EMAIL-CNTR           TO DISP-NO-EMAIL-CNTR.
+           MOVE TOT-SKIP-CNTR               TO DISP-SKIP-CNTR.
+           MOVE TOT-PAID-CNTR               TO DISP-PAID-CNTR.
+           MOVE TOT-CANCEL-CNTR             TO DISP-CANCEL-CNTR.
+           MOVE WS-EMAIL-PERCENT            TO WS-EMAIL-PERCENT-FRMT.
+
+           MOVE SPACES                      TO WS-CLUB-C
+                                               WS-CLUB-NAME.
+
+           STRING  'TOTAL     '
+                   WS-COMMA-2
+                   WS-CLUB-C
+                   WS-COMMA-2
+                   WS-CLUB-NAME
+                   WS-COMMA
+                   WS-MEMBER-FRMT
+                   WS-COMMA
+                   WS-EMAIL-FRMT
+                   WS-COMMA
+                   WS-EMAIL-PERCENT-FRMT
+                   '%'
+                   WS-COMMA
+                   DELIMITED BY SIZE INTO REPORT-REC-OUT
+           END-STRING.
+
+           WRITE REPORT-REC-OUT.
+
+           DISPLAY '**********************************************'.
+           DISPLAY '  TOTAL RECORDS PROCESSED      '
+           DISPLAY '  TOTAL INPUT RECORDS READ   : ' DISP-READ-CNTR.
+           DISPLAY '                                 ---------'.
+           DISPLAY '  TOTAL EMAIL RECORDS WRITTEN: ' DISP-WRITE-CNTR.
+           DISPLAY '  TOTAL RECORDS NO E-MAIL    : ' DISP-NO-EMAIL-CNTR.
+           DISPLAY '  TOTAL RECORDS PAID         : ' DISP-PAID-CNTR.
+           DISPLAY '  TOTAL RECORDS CANCELLED    : ' DISP-CANCEL-CNTR.
+           DISPLAY '  TOTAL RECORDS SKIPPED      : ' DISP-SKIP-CNTR.
+           DISPLAY '**********************************************'.
+      /
+      ***************************************************************
+      * ERROR PROCESSING                                            *
+      ***************************************************************
+       Z9999-ERROR.
+
+           DISPLAY '-MD572EM- '
+           DISPLAY '-MD572EM- ERROR MESSAGE -'
+           DISPLAY '-MD572EM- ' MD900-ERROR-MSG-1
+           DISPLAY '-MD572EM- ' MD900-PARAGRAPH-NAME
+           DISPLAY '-MD572EM-   CLUB   ' C206-CLUB-CODE
+           DISPLAY '-MD572EM-   MBRSHP ' C206-MEMBR-ID
+           DISPLAY '-MD572EM- '
+           STRING 'CLUB ' C206-CLUB-CODE
+             DELIMITED BY SIZE INTO MD900-KEY-DATA-LN (1)
+           STRING 'MBR  ' C206-MEMBR-ID
+             DELIMITED BY SIZE INTO MD900-KEY-DATA-LN (2).
+
+           MOVE '16'                           TO MD901-ABEND-CODE.
+
+           PERFORM Z9999-ABEND.
+
+      ***************************************************************
+      * ABEND ROUTINE                                               *
+      ***************************************************************
+       Z9999-ABEND.
+
+           COPY MRD902C.
+
+      *----------------------------------------------------------------*
+      *          E N D   O F   P R O G R A M   M D 5 7 2 E M           *
+      *----------------------------------------------------------------*

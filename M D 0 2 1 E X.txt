@@ -1,0 +1,568 @@
+      ********************** M D 0 2 1 E X ***************************
+      * THIS PROGRAM WILL DO ........................................*
+      * PRODUCE A COMMA DELIMITED FILE OF CUSTID BASED ON THE        *
+      * FOLLOWING REQUIREMENTS:                                      *
+      * 1. MEMBER IS IN RENEWAL                                      *
+      * 2. MEMBER IS NOT ON MEMBERSHIP AUTOPAY * *
+      * 3. MEMBER HAS A MEMBERSHIP PAYMENT DUE                       *
+      * 4. MEMBER PAYMENT IS NOT IN TRANSIT                          *
+      * 5. MEMBER PAYMENT IS DUE 13 DAYS FROM TODAY                  *
+      * 6. MEMBER CUSTID IS ON TODAY LIST OF MOBILE NOTIFICATION     *
+      *    SUBSCRIBER.                                               *
+      *                                                              *
+      ****************************************************************
+      ****************************************************************
+      *                          UPDATES                             *
+      *  WHEN    WHO                  WHAT                           *
+      * ======== ====== =============================================*
+      * 12/21/18 MDIEP  WEB-18-50 MOBILE APP PUSH NOTIFICATION       *
+      * 08/23/24 RATHNA MEM-479718 - ADD FIRST NAME TO SMS & PUSH    *
+      *                              FILE                            *
+      ****************************************************************
+
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MD021EX.
+       INSTALLATION. ACSC.
+       DATE-WRITTEN. NOV  2018.
+       DATE-COMPILED.
+       AUTHOR.   M. DIEP.
+       ENVIRONMENT DIVISION.
+            SKIP1
+       CONFIGURATION SECTION.
+            SKIP1
+       INPUT-OUTPUT SECTION.
+            SKIP1
+       FILE-CONTROL.
+
+           SELECT DATE-FILE ASSIGN TO PROCDTIN.
+           SELECT OUT-FILE  ASSIGN TO MD021OP.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  DATE-FILE
+            LABEL RECORDS ARE STANDARD
+            BLOCK CONTAINS 0 RECORDS
+            RECORDING MODE IS F
+            DATA RECORD IS DATEREC.
+
+       01   DATEREC        PIC X(80).
+
+       FD  OUT-FILE
+            LABEL RECORDS ARE STANDARD
+            BLOCK CONTAINS 0 RECORDS
+            RECORDING MODE IS F
+            DATA RECORD IS OUTREC.
+
+      *** MEM-479718 CHANGED THE FILE LENGTH FROM 160 TO 198 BYTES
+       01   OUTREC         PIC X(198).
+
+       WORKING-STORAGE SECTION.
+       01  FILLER                  PIC X(45)  VALUE
+           '*****  MD021EX WORKING STORAGE SECTION  *****'.
+
+       01  CALLED-PGMS.
+           05  WS-FN435BT              PIC X(08)  VALUE 'FN435BT '.
+           05  WS-MC501BCD             PIC X(08)  VALUE 'MC501BCD'.
+           05  WS-MD999CK              PIC  X(08) VALUE 'MD999CK '.
+
+       01  WS-DATEREC.
+           05  WS-PROC-DATE            PIC X(10).
+           05  FILLER                  PIC X(70) VALUE SPACES.
+
+       01  WS-HEADER.
+           05  FILLER            PIC X(17) VALUE 'MembershipNumber,'.
+           05  FILLER               PIC X(07) VALUE 'CustID,'.
+           05  FILLER               PIC X(13) VALUE 'MobileNumber,'.
+           05  FILLER               PIC X(07) VALUE 'Locals,'.
+           05  FILLER               PIC X(13) VALUE 'EmailAddress,'.
+           05  FILLER               PIC X(13) VALUE 'SubcriberKey,'.
+      *** MEM-479718 START
+           05  FILLER               PIC X(09) VALUE 'FirstName'.
+           05  FILLER               PIC X(119) VALUE SPACES.
+      *** MEM-479718 STOP
+
+       01  WS-MISC-SW.
+           05  WS-DATE-FILE-FLAG          PIC X  VALUE 'N'.
+               88  DATE-EOF                      VALUE 'Y'.
+           05  WS-FETCH-SW                PIC X  VALUE 'N'.
+               88  NO-MORE-TO-FETCH              VALUE 'Y'.
+           05  WS-MEMBER-PIT-FLAG            PIC  X(01) VALUE 'N'.
+               88  MEMBER-HAS-PIT-NO                    VALUE 'N'.
+               88  MEMBER-HAS-PIT-YES                   VALUE 'Y'.
+
+       01  WS-MISC-VARIABLES.
+           05  WS-PGM-NAME              PIC  X(8) VALUE 'MD021EX '.
+           05  WS-INPUT-COUNT           PIC  9(5) VALUE 0.
+           05  WS-SKIPPED-COUNT         PIC  9(5) VALUE 0.
+           05  WS-NOT-IN-HHLD-CNT       PIC  9(5) VALUE 0.
+           05  WS-OUT-COUNT             PIC  9(5) VALUE 0.
+           05  WS-PIT-SUB                     PIC S9(3)     COMP-3
+                                              VALUE ZEROES.
+               88  MAX-PIT-SUB                VALUES +10.
+           05  WS-PIT-TOTAL                   PIC S9(5)V99  COMP-3.
+           05  WS-TARGET-DATE                 PIC X(10).
+           05  WS-RUN-DATE.
+               10 WS-RUN-MM             PIC 99.
+               10 FILLER                PIC X  VALUE '/'.
+               10 WS-RUN-DD             PIC 99.
+               10 FILLER                PIC X  VALUE '/'.
+               10 WS-RUN-CCYY           PIC 9999.
+           05  PHONE-IND                PIC S9(3) COMP-3.
+      *** MEM-479718 START
+           05  WS-FIRST-NAME            PIC  X(25) VALUE SPACES.
+      *** MEM-479718 END
+
+      *   MACS MC501BCD INPUT AND OUTPUT AREAS                             CL136
+       01  MC501-INPUT-OUTPUT.                                             CL136
+       COPY MAC501C.                                                       CL136
+
+       01  WS-OUTREC.
+           COPY MRD021C.
+
+       01  MD900-ERROR-DATA.
+           COPY MRD900C.
+
+       01  MD901-ERROR-DATA.
+           COPY MRD901C.
+
+       01  MD903-SQL-ERROR.
+           COPY MRD903C.
+      *----------------------------------------------------------------
+      *    MD999CK LINK DATA - 16 DIGIT MEMBERSHIP NUMBER
+      *----------------------------------------------------------------
+       01  MD999-LINK-DATA.
+       COPY MRD999CK.
+      /
+       01  UTL000-CURRENT-DATE.
+           COPY  UTL000C.
+
+      /****************************************************************
+      *     FIN CALL COPYBOOK TO DETERMINE IF THERE IS PAYMENT IN PIT *
+      *****************************************************************
+       01  FN435BT-COMMAREA.
+           COPY FIN435C.
+
+      ***********************DCLGEN*******************************
+           EXEC SQL
+                INCLUDE MBRHSHLD
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE MBRPRDDT
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE MEMBER
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE SQLCA
+           END-EXEC.
+
+           EXEC SQL
+                DECLARE CUSTID CURSOR WITH HOLD FOR
+                SELECT
+                       MHH.FK_ACL_CLUB_C
+                     , MHH.MBRSHP_N
+                     , MI.FK_CUST_SYS_ID_N
+                  FROM
+                       MBRSHP_HOUSEHOLD MHH
+                     , MBR_PRD_DTL MPD
+                     , MBR_INFO MI
+                  WHERE MHH.CUR_TERM_EXP_D < MHH.REN_TERM_EXP_D
+                    AND MHH.FK_BILL_PLAN_TYP_C = 'AM'
+                    AND MHH.FK_ACL_CLUB_C  = MI.FK_MHH_ACL_CLUB_C
+                    AND MHH.MBRSHP_N       = MI.FK_MHH_MBRSHP_N
+                    AND MI.FK_MRO_ROLE_C   = '00'
+                    AND MI.EXP_D           = '12/31/9999'
+                    AND MHH.FK_ACL_CLUB_C  = MPD.FK_MHH_ACL_CLUB_C
+                    AND MHH.MBRSHP_N       = MPD.FK_MHH_MBRSHP_N
+                    AND MPD.FK_MPR_MRO_ROLE_C = '00'
+                    AND MPD.FK_MPR_PRD_C   = '01'
+                    AND MPD.EXP_D          = '12/31/9999'
+                    AND MPD.PAID_C         = 'N'
+                    AND MPD.EFF_D          = :WS-TARGET-DATE
+              ORDER BY
+                       MHH.FK_ACL_CLUB_C
+                     , MHH.MBRSHP_N
+              FOR FETCH ONLY
+              WITH UR
+           END-EXEC.
+
+       PROCEDURE DIVISION.
+
+       0000-MAIN-LINE.
+
+           PERFORM 1000-INITIALIZE-ROUTINE THRU 1000-X.
+
+           PERFORM 2000-PROCESS-CURSOR THRU 2000-X.
+
+           PERFORM 2050-EOF-ROUTINE THRU 2050-X.
+
+           GOBACK.
+       0000-X.  EXIT.
+
+       1000-INITIALIZE-ROUTINE.
+
+           INITIALIZE MD900-ERROR-DATA
+                      MD901-ERROR-DATA.
+
+           OPEN INPUT DATE-FILE
+                OUTPUT OUT-FILE.
+
+           PERFORM 1005-GET-PROC-DATE THRU 1005-X.
+
+           PERFORM 1015-OPEN-CURSOR THRU 1015-X.
+
+           PERFORM 1020-FETCH THRU 1020-X.
+
+           EVALUATE SQLCODE
+               WHEN MD903-SQL-OK
+                    ADD 1 TO WS-INPUT-COUNT
+               WHEN 100
+                    MOVE '1020-FETCH'
+                      TO MD900-PARAGRAPH-NAME
+                    MOVE 'CUSTID'
+                      TO MD900-TABLE-CURSOR-NAME
+                    SET MD900-DB2-FUNCTION-FETCH TO TRUE
+                    MOVE 'CURSOR IS EMPTY'
+                      TO MD900-ERROR-MSG-1
+                    DISPLAY MD900-ERROR-MSG-1
+                    PERFORM 9994-FILL-ABEND-DATA THRU 9994-X
+                    PERFORM 9992-CLOSE-CURSOR THRU 9992-X
+                    PERFORM 9999-ABEND THRU 9999-X
+               WHEN OTHER
+                    MOVE '1020-FETCH'
+                      TO MD900-PARAGRAPH-NAME
+                    SET MD900-DB2-FUNCTION-FETCH TO TRUE
+                    MOVE 'CUSTID'
+                      TO MD900-TABLE-CURSOR-NAME
+                    MOVE 'CURSOR FETCH ERROR'
+                      TO MD900-ERROR-MSG-1
+                    PERFORM 9994-FILL-ABEND-DATA THRU 9994-X
+                    PERFORM 9992-CLOSE-CURSOR THRU 9992-X
+                    PERFORM 9999-ABEND THRU 9999-X
+           END-EVALUATE.
+
+           WRITE OUTREC FROM WS-HEADER.
+
+       1000-X. EXIT.
+
+       1005-GET-PROC-DATE.
+
+           PERFORM UNTIL DATE-EOF
+             READ DATE-FILE
+               INTO WS-DATEREC
+                 AT END
+                  SET DATE-EOF TO TRUE
+             END-READ
+           END-PERFORM.
+
+           EXEC SQL
+                SET :WS-TARGET-DATE = CHAR(DATE(:WS-PROC-DATE)
+                                    + 13 DAYS,ISO)
+           END-EXEC.
+
+           EVALUATE SQLCODE
+               WHEN MD903-SQL-OK
+                    CONTINUE
+               WHEN OTHER
+                    SET MD900-DB2-FUNCTION-SET TO TRUE
+                    MOVE '1005-GET-PROC-DATE'
+                      TO MD900-PARAGRAPH-NAME
+                    MOVE 'DATE'
+                      TO MD900-TABLE-CURSOR-NAME
+                    MOVE 'ERROR CALCULATING DATE'
+                      TO MD900-ERROR-MSG-1
+                    PERFORM 9994-FILL-ABEND-DATA THRU 9994-X
+                    PERFORM 9999-ABEND THRU 9999-X
+           END-EVALUATE.
+
+           MOVE FUNCTION CURRENT-DATE  TO   UTL000-CURRENT-DATE.
+           MOVE UTL000-MM-9            TO   WS-RUN-MM.
+           MOVE UTL000-DD-9            TO   WS-RUN-DD.
+           MOVE UTL000-CCYY            TO   WS-RUN-CCYY.
+
+       1005-X.  EXIT.
+
+       1015-OPEN-CURSOR.
+
+           EXEC SQL
+                OPEN CUSTID
+           END-EXEC.
+
+           EVALUATE SQLCODE
+               WHEN MD903-SQL-OK
+                    CONTINUE
+               WHEN OTHER
+                    SET MD900-DB2-FUNCTION-OPEN TO TRUE
+                    MOVE '1015-OPEN-CURSOR'
+                      TO MD900-PARAGRAPH-NAME
+                    MOVE 'CUSTID'
+                      TO MD900-TABLE-CURSOR-NAME
+                    MOVE 'ERROR OPENING CURSOR'
+                      TO MD900-ERROR-MSG-1
+                    PERFORM 9994-FILL-ABEND-DATA THRU 9994-X
+                    PERFORM 9999-ABEND THRU 9999-X
+           END-EVALUATE.
+       1015-X.  EXIT.
+
+       1020-FETCH.
+
+           EXEC SQL
+                FETCH CUSTID
+                 INTO :MBRSHP-HOUSEHOLD.FK-ACL-CLUB-C
+                     ,:MBRSHP-HOUSEHOLD.MBRSHP-N
+                     ,:MBR-INFO.FK-CUST-SYS-ID-N
+           END-EXEC.
+
+       1020-X.  EXIT.
+
+       2000-PROCESS-CURSOR.
+
+           PERFORM UNTIL NO-MORE-TO-FETCH
+
+             MOVE SPACES        TO WS-OUTREC
+             MOVE ','           TO MD021-COMMA-01
+                                 , MD021-COMMA-02
+                                 , MD021-COMMA-03
+                                 , MD021-COMMA-04
+                                 , MD021-COMMA-05
+                                 , MD021-COMMA-06
+
+             PERFORM 2015-CALL-MD999CK THRU 2015-X
+             MOVE MD999CK-CHECK-DIGIT   TO MD021-MBR-NUM-16
+             MOVE FK-CUST-SYS-ID-N OF MBR-INFO
+               TO MD021-CUST-ID
+             MOVE 'en-US'               TO MD021-LOCALS
+             PERFORM 2001-CHECK-PIT     THRU 2001-X
+             IF MEMBER-HAS-PIT-NO
+                PERFORM 2010-CALL-MC501BCD THRU 2010-X
+                PERFORM 2020-WRITE-OUTFILE THRU 2020-X
+             ELSE
+                ADD 1 TO WS-SKIPPED-COUNT
+             END-IF
+             PERFORM 1020-FETCH THRU 1020-X
+
+             EVALUATE SQLCODE
+                 WHEN MD903-SQL-OK
+                      ADD 1 TO WS-INPUT-COUNT
+                 WHEN 100
+                      SET NO-MORE-TO-FETCH TO TRUE
+                 WHEN OTHER
+                      MOVE '1020-FETCH'
+                        TO MD900-PARAGRAPH-NAME
+                      SET MD900-DB2-FUNCTION-FETCH TO TRUE
+                      MOVE 'CUSTID'
+                        TO MD900-TABLE-CURSOR-NAME
+                      MOVE 'CURSOR FETCH ERROR'
+                        TO MD900-ERROR-MSG-1
+                      PERFORM 9994-FILL-ABEND-DATA THRU 9994-X
+                      PERFORM 9992-CLOSE-CURSOR THRU 9992-X
+                      PERFORM 9999-ABEND THRU 9999-X
+             END-EVALUATE
+           END-PERFORM.
+       2000-X.  EXIT.
+
+       2001-CHECK-PIT.
+
+           INITIALIZE FN435BT-COMMAREA
+                    , WS-PIT-TOTAL.
+
+           MOVE 'MD021EX '                 TO FIN435-I-PGM-NAME.
+           SET  FIN435-MEMBERSHIP          TO TRUE.
+           MOVE 'BATCH '                   TO FIN435-I-EMPLOYEE-NUM.
+           MOVE FK-ACL-CLUB-C              of MBRSHP-HOUSEHOLD
+                                           TO FIN435-I-CLUB-CD.
+           MOVE SPACES                     TO FIN435-I-PROD-PREFIX.
+           MOVE MBRSHP-N                   of MBRSHP-HOUSEHOLD
+                                           TO FIN435-I-PRODUCT-CD.
+           MOVE SPACES                     TO FIN435-I-DATE-CCYYMMDD.
+
+           CALL WS-FN435BT          USING  FN435BT-COMMAREA
+
+           IF FIN435-RETURN-CODE = '000'
+              PERFORM 2005-CHECK-PIT-DETAIL THRU 2005-X
+           ELSE
+              IF FIN435-RETURN-CODE = '210'
+                 SET MEMBER-HAS-PIT-NO  TO TRUE
+              ELSE
+               DISPLAY '********************************************'
+               DISPLAY '** ERROR CALLING PIT     USING CLUB/MBR:  **'
+               DISPLAY '** '
+                       FK-ACL-CLUB-C of MBRSHP-HOUSEHOLD
+                       '/'
+                       MBRSHP-N of MBRSHP-HOUSEHOLD
+               DISPLAY '********************************************'
+               DISPLAY '**FIN435-RETURN-CODE: ' FIN435-RETURN-CODE
+               DISPLAY '**FIN435-ERROR-MSG: ' FIN435-RETURN-MSG
+                 MOVE FK-ACL-CLUB-C         OF MBRSHP-HOUSEHOLD
+                                            TO MD900-KEY-DATA-LN (1)
+                 MOVE MBRSHP-N              OF MBRSHP-HOUSEHOLD
+                                            TO MD900-KEY-DATA-LN (2)
+                 MOVE FIN435-RETURN-CODE    TO MD900-KEY-DATA-LN (3)
+                 STRING 'BAD RETURN CODE FROM FN435BT: '
+                  FIN435-RETURN-CODE    DELIMITED BY SIZE
+                                    INTO MD900-ERROR-MSG-1
+                 MOVE FIN435-RETURN-MSG
+                                   TO MD900-ERROR-MSG-2
+                 MOVE 'FN435BT'
+                                   TO MD900-PGM-NAME
+                                      MD900-TABLE-CURSOR-NAME
+                 MOVE '2001-CHECK-PIT'
+                                    TO MD900-PARAGRAPH-NAME
+                 PERFORM 9992-CLOSE-CURSOR THRU 9992-X
+                 PERFORM 9999-ABEND THRU 9999-X
+              END-IF
+           END-IF.
+
+
+       2001-X.  EXIT.
+
+       2005-CHECK-PIT-DETAIL.
+
+           PERFORM VARYING WS-PIT-SUB FROM +1 BY +1
+                UNTIL  WS-PIT-SUB > FIN435-O-NBR-OF-PAYMENTS
+                   OR  MAX-PIT-SUB
+             IF FIN435-O-PAYMNT-STATUS(WS-PIT-SUB) = 'PIT '
+                ADD FIN435-O-PAYMNT-AMOUNT(WS-PIT-SUB) TO WS-PIT-TOTAL
+             END-IF
+           END-PERFORM.
+
+           IF WS-PIT-TOTAL > 0
+              SET MEMBER-HAS-PIT-YES TO TRUE
+           ELSE
+              SET MEMBER-HAS-PIT-NO  TO TRUE
+           END-IF.
+
+
+       2005-X.  EXIT.
+
+       2010-CALL-MC501BCD.
+
+           INITIALIZE  MC501-INPUT-OUTPUT.                                 CL**1
+                                                                           CL**1
+           MOVE MD021-CUST-ID        TO MC501-I-CUSTOMER-NUMBER.           CL**1
+           MOVE '01'                 TO MC501-I-LOB-CODE.                  CL**1
+           MOVE 'MD021EX '           TO MC501-I-CALLING-PROGRAM.           CL**1
+           MOVE '00'                 TO MC501-I-ROLE-CODE.                 CL**1
+                                                                           CL**1
+           MOVE 'Y'                  TO MC501-I-REQ-ALL-CUST-DATA.         CL**1
+           MOVE 'Y'                  TO MC501-I-REQ-ALL-CUST-PHONE.        CL**1
+                                                                           CL**1
+           CALL WS-MC501BCD    USING  MC501-INPUT-OUTPUT.                  CL**1
+
+           EVALUATE MC501-O-RETURN-CODE
+             WHEN ZERO
+      **** MEM-479718 START
+                MOVE MC501-O-FIRST-NAME  TO MD021-FIRST-NAME
+      **** MEM-479718 END
+                  IF MC501-O-EMAIL-VALID-C = '1'
+                     MOVE MC501-O-EMAIL      TO MD021-EMAIL
+                                                MD021-SUBSCRIBER-KEY
+                  END-IF
+                  PERFORM VARYING PHONE-IND FROM 1 BY 1
+                    UNTIL PHONE-IND > MC501-O-NUM-OF-PHONES
+                     IF MC501-O-PH-ROLE (PHONE-IND) = 'CL' AND
+                        MC501-O-PH-VALID-CODE (PHONE-IND) = '1' AND
+                        MC501-O-PH-EXP-DATE (PHONE-IND) = '99991231'
+                        MOVE '1'
+                          TO MD021-CELL-PHONE (1:1)
+                        MOVE MC501-O-PH-AREA-CODE (PHONE-IND)
+                          TO MD021-CELL-PHONE (2:3)
+                        MOVE MC501-O-PH-PREFIX (PHONE-IND)
+                          TO MD021-CELL-PHONE (5:3)
+                        MOVE MC501-O-PH-SUFFIX (PHONE-IND)
+                          TO MD021-CELL-PHONE (8:4)
+                     END-IF
+                  END-PERFORM
+             WHEN OTHER
+             DISPLAY '********************************************'
+             DISPLAY '** ERROR CALLING MC501   USING CLUB/MBR:  **'
+             DISPLAY '** '
+                     FK-ACL-CLUB-C OF MBRSHP-HOUSEHOLD
+                     '/'
+                     MBRSHP-N OF MBRSHP-HOUSEHOLD
+             DISPLAY '********************************************'
+             DISPLAY '**MC501-O-RETURN-CODE: ' MC501-O-RETURN-CODE
+             DISPLAY '**MC501-O-RETURN-MESSAGE: ' MC501-O-RETURN-MESSAGE
+                 MOVE FK-ACL-CLUB-C         OF MBRSHP-HOUSEHOLD
+                                            TO MD900-KEY-DATA-LN (1)
+                 MOVE MBRSHP-N              OF MBRSHP-HOUSEHOLD
+                                            TO MD900-KEY-DATA-LN (2)
+                 MOVE MC501-O-RETURN-CODE   TO MD900-KEY-DATA-LN (3)
+                 STRING 'BAD RETURN CODE FROM MC501BCD: '
+                  MC501-O-RETURN-CODE   DELIMITED BY SIZE
+                                    INTO MD900-ERROR-MSG-1
+                 MOVE MC501-O-RETURN-MESSAGE
+                                   TO MD900-ERROR-MSG-2
+                 MOVE 'MC501BCD'
+                                   TO MD900-PGM-NAME
+                                      MD900-TABLE-CURSOR-NAME
+                 MOVE '2010-CALL-MC501BCD'
+                                    TO MD900-PARAGRAPH-NAME
+                 PERFORM 9992-CLOSE-CURSOR THRU 9992-X
+                 PERFORM 9999-ABEND THRU 9999-X
+           END-EVALUATE
+           .
+
+       2010-X.  EXIT.
+
+       2015-CALL-MD999CK.
+
+           INITIALIZE MD999-LINK-DATA.
+
+           MOVE FK-ACL-CLUB-C OF MBRSHP-HOUSEHOLD
+                                     TO MD999CK-CLUB-CODE.
+           MOVE MBRSHP-N OF MBRSHP-HOUSEHOLD (2:8)
+                                     TO MD999CK-MEMBER.
+           MOVE '0'                  TO MD999CK-ROLE-CODE.
+
+      *** NOTE: THERE IS NO RETURN CODE OR ERROR INFO COMING BACK FROM
+      *** MD999CK. IT EITHER ABENDS OR RETURNS THE DATA.
+
+           CALL WS-MD999CK           USING MD999-LINK-DATA.
+
+       2015-X.  EXIT.
+
+       2020-WRITE-OUTFILE.
+
+              WRITE OUTREC FROM WS-OUTREC
+              ADD 1 TO WS-OUT-COUNT
+              .
+       2020-X.  EXIT.
+
+       2050-EOF-ROUTINE.
+
+           DISPLAY MD901-SEP.
+           DISPLAY '   PROGRAM NAME: ' WS-PGM-NAME.
+           DISPLAY 'PROCESSING DATE: ' WS-PROC-DATE
+                   '       RUN DATE: ' WS-RUN-DATE.
+           DISPLAY MD901-SEP.
+           DISPLAY '    TOTAL INPUT: ' WS-INPUT-COUNT.
+           DISPLAY '  TOTAL SKIPPED: ' WS-SKIPPED-COUNT.
+           DISPLAY '   TOTAL OUTPUT: ' WS-OUT-COUNT.
+           DISPLAY MD901-SEP.
+           CLOSE DATE-FILE
+                 OUT-FILE.
+
+       2050-X.  EXIT.
+
+       9992-CLOSE-CURSOR.
+           EXEC SQL
+                CLOSE CUSTID
+           END-EXEC.
+       9992-X.  EXIT.
+
+       9994-FILL-ABEND-DATA.
+           SET MD900-RC-DB2-SQL-ERROR TO TRUE
+           MOVE SQLCODE TO MD900-SQLCODE
+           MOVE SQLCA TO MD900-SQLCA.
+       9994-X.  EXIT.
+
+       9999-ABEND.
+           COPY MRD902C.
+       9999-X.  EXIT.
+      ********************** END OF PROGRAM ***********************

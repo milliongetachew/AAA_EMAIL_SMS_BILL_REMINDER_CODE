@@ -1,0 +1,524 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.    md022cc.
+       INSTALLATION.  ACSC.
+       DATE-WRITTEN.
+       DATE-COMPILED.
+       AUTHOR.   R BOLANOS./A Sampang
+
+      *================================================================*
+      *    DATE        MODIFICATION LOG                       BY       *
+      *  ----------  ---------------------------------------- ---------*
+      *  08/23/2024  MEM-479718 - ADD FIRST NAME TO SMS       RATHNA R *
+      *                           AND PUSH FILE                        *
+      *  05/15/2025  MEM-482325 - Remove Opt-in Criteria      Praveena *
+      ******************************************************************
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+
+       INPUT-OUTPUT SECTION.
+
+       FILE-CONTROL.
+
+           SELECT  SMS-FILE    ASSIGN  TO  OSMSFILE.
+           SELECT  PUSH-FILE   ASSIGN  TO  OPSHFILE.
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+       FD  SMS-FILE
+           LABEL RECORDS ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F
+           DATA RECORD IS SMS-RECORD.
+
+      *** MEM-479718 CHANGED THE FILE LENGTH FROM 64 TO 120 BYTES
+       01  SMS-RECORD                   PIC X(120).
+
+       FD  PUSH-FILE
+           LABEL RECORDS ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F
+           DATA RECORD IS PUSH-RECORD.
+
+      *** MEM-479718 CHANGED THE FILE LENGTH FROM 60 TO 120 BYTES
+       01  PUSH-RECORD                  PIC X(120).
+
+       WORKING-STORAGE SECTION.
+       01  FILLER                       PIC  X(70) VALUE
+           '*****  MD022cc WORKING STORAGE SECTION  *****'.
+
+       01  WS-SMS-PUSH-REC-AREAS.
+           COPY MD022SP.
+
+       01  WS-MISC-AREAS.
+           05  WS-CLUB                  PIC X(03) VALUE SPACES.
+           05  WS-MEMBER-ID             PIC X(09) VALUE SPACES.
+           05  WS-CUSTOMER-ID           PIC 9(15) VALUE 0.
+           05  WS-CUST-ID               PIC S9(15) COMP-3 VALUE 0.
+           05  MEMBER-CONSENT-SW        PIC  X(01) VALUE 'N'.
+               88  MEMBER-CONSENT-YES              VALUE 'Y'.
+               88  MEMBER-CONSENT-NO               VALUE 'N'.
+      *** MEM-479718 START
+           05  WS-FIRST-NAME            PIC  X(25) VALUE SPACES.
+      *** MEM-479718 END
+
+
+
+       01  WS-SWITCHES.
+           05  FETCH-SW                 PIC  X(01) VALUE 'N'.
+               88  NO-MORE-TO-FETCH                VALUE 'Y'.
+
+       01  WS-SYSIN-AREA.
+           05  WS-INTERVAL-DAYS         PIC  9(02) VALUE 0.
+           05  FILLER                   PIC  X(78) VALUE SPACES.
+
+       01  WS-WORK-AREA.
+           05  WS-INTER-DAYS            PIC S9(04) COMP VALUE 0.
+           05  WS-PGM-NAME              PIC  X(08) VALUE 'MD022cc '.
+           05  PHONE-IND                PIC  9(02) VALUE 0.
+           05  WS-PHONE-NUMBER.
+               10  WS-PHONE-AREA-C      PIC  9(03) VALUE 0.
+               10  WS-PHONE-PRFX-C      PIC  9(03) VALUE 0.
+               10  WS-PHONE-SUFX-C      PIC  9(04) VALUE 0.
+           05  WS-PHONE-FOUND-SW        PIC  X(01) VALUE 'N'.
+               88  PHONE-FOUND                     VALUE 'Y'.
+
+       01  WS-COUNTERS.
+           05  WS-EXTRACT-CTR           PIC  9(05) VALUE 0.
+           05  WS-SMS-WRITE-CTR         PIC  9(05) VALUE 0.
+           05  WS-PUSH-WRITE-CTR        PIC  9(05) VALUE 0.
+
+       01  WS-DATES-AREAS.
+           05  WS-TARGET-DATE           PIC  X(10) VALUE SPACES.
+           05  PROC-DATE-ISO            PIC  X(10) VALUE SPACES.
+           05  RUN-DATE                 PIC  X(10) VALUE SPACES.
+
+       01  CALLED-PGMS.
+           05  MCFCCAUT                PIC  X(08) VALUE 'MCFCCAUT'.
+           05  MD999CK                 PIC  X(08) VALUE 'MD999CK '.
+           05  MD610BR                 PIC  X(08) VALUE 'MD610BR '.
+           05  MD699BR                 PIC  X(08) VALUE 'MD699BR '.
+           05  MD930BR                 PIC  X(07) VALUE 'MD930BR'.
+           05  MC501BCD                PIC  X(08) VALUE 'MC501BCD'.
+           05  MC556BR                 PIC  X(08) VALUE 'MC556BR '.
+           05  FN435BT                 PIC  X(08) VALUE 'FN435BT '.
+
+       01  MD930-LINK-DATA.
+           COPY MRD930C.
+
+      *   MACS MC501BCD INPUT AND OUTPUT AREAS
+       01  MC501-INPUT-OUTPUT.
+           COPY MAC501C.
+
+       01  MC556-INPUT-OUTPUT.
+           COPY MAC556C.
+
+       01 MC900-ERROR-DATA.
+           COPY MAC900C.
+
+       01  MD900-ERROR-DATA.
+           COPY MRD900C.
+
+       01  MD901-ERROR-DATA.
+           COPY MRD901C.
+
+       01  MD903-SQL-ERROR.
+           COPY MRD903C.
+
+      ***********************DCLGEN*******************************
+      *    MBRSHP_HOUSEHOLD
+      ************************************************************
+           EXEC SQL
+                INCLUDE MBRHSHLD
+           END-EXEC.
+
+      ************************************************************
+      *    MBRSHP_NEXT_EVENT
+      ************************************************************
+           EXEC SQL
+                INCLUDE MBRNXEVT
+           END-EXEC.
+
+      ************************************************************
+      *    MBR_INFO
+      ************************************************************
+           EXEC SQL
+                INCLUDE MEMBER
+           END-EXEC.
+
+           EXEC SQL
+                INCLUDE SQLCA
+           END-EXEC.
+
+      ************************************************************
+      *       CURSORS
+      ************************************************************
+           EXEC SQL
+                DECLARE csr-cc-decline CURSOR WITH HOLD FOR
+                SELECT
+                       MHH.FK_ACL_CLUB_C
+                     , MHH.MBRSHP_N
+                     , MI.FK_CUST_SYS_ID_N
+                  FROM
+                       MBRSHP_HOUSEHOLD   MHH
+                     , MBRSHP_NEXT_EVENT  NE
+                     , MBR_INFO           MI
+                  WHERE MHH.FK_ACL_CLUB_C  = MI.FK_MHH_ACL_CLUB_C
+                          AND MHH.MBRSHP_N       = MI.FK_MHH_MBRSHP_N
+                          AND MHH.FK_ACL_CLUB_C  = NE.FK_MHH_ACL_CLUB_C
+                          AND MHH.MBRSHP_N       = NE.FK_MHH_MBRSHP_N
+                          AND NE.NEXT_EVENT_D    = :WS-TARGET-DATE
+                          AND MI.FK_MRO_ROLE_C   = '00'
+                          AND MI.EXP_D           = '12/31/9999'
+                          AND FK_MBR_BILL_EVENT  = '75'
+                          AND MHH.FK_ACL_CLUB_C  <> '065'
+               ORDER BY
+                        MHH.FK_ACL_CLUB_C
+                      , MHH.MBRSHP_N
+              FOR FETCH ONLY
+              WITH UR
+           END-EXEC.
+
+      ************************************************************
+       PROCEDURE DIVISION.
+      ************************************************************
+
+      *----------------------------------------------------------*
+       0000-MAIN-LINE.
+      *----------------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 0000-MAIN-LINE     '.
+
+           DISPLAY '========================================='.
+           DISPLAY '== M D 0 2 2 C C --- S T A R T E D     '.
+           DISPLAY '========================================='.
+
+           PERFORM 1000-INITIALIZE-ROUTINE.
+
+           PERFORM 2000-PROCESS-CURSOR
+               UNTIL NO-MORE-TO-FETCH.
+
+           PERFORM 9999-FINAL-RTN.
+
+           DISPLAY '========================================='.
+           DISPLAY '== M D 0 2 2 C C   -   E N D E D      '.
+           DISPLAY '========================================='.
+           GOBACK.
+
+      *----------------------------------------------------------*
+       1000-INITIALIZE-ROUTINE.
+      *----------------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 1000-INITIALIZE-ROUTINE'.
+
+           INITIALIZE MD900-ERROR-DATA
+                      MD901-ERROR-DATA.
+
+           OPEN OUTPUT SMS-FILE
+                       PUSH-FILE.
+
+           PERFORM 1100-GET-PROC-DATE.
+
+           PERFORM 1200-CALC-TARGET-DATE.
+
+           DISPLAY MD901-SEP.
+           DISPLAY '   PROGRAM NAME : ' WS-PGM-NAME.
+           DISPLAY '       RUN DATE : ' RUN-DATE.
+           DISPLAY '    TARGET-DATE : ' WS-TARGET-DATE.
+           DISPLAY '   EXTRACT DATE : ' MD930-PROC-DATE
+           DISPLAY MD901-SEP.
+
+           PERFORM 1300-OPEN-CURSOR.
+
+           WRITE SMS-RECORD  FROM WS-SMS-HEADER-RECORD.
+           WRITE PUSH-RECORD FROM WS-PUSH-HEADER-RECORD.
+
+      *----------------------------------------------------------*
+       1100-GET-PROC-DATE.
+      *----------------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 1100-GET-PROC-DATE     '.
+
+           INITIALIZE                             MD930-LINK-DATA.
+
+           CALL MD930BR                     USING MD930-LINK-DATA
+                                                  MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               MOVE MD930-ISO-DT               TO PROC-DATE-ISO
+               DISPLAY '*** PROCESSING DATE : '   PROC-DATE-ISO
+           END-IF.
+
+      *----------------------------------------------------------*
+       1200-CALC-TARGET-DATE.
+      *----------------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 1200-CALC-TARGET-DATE  '.
+
+           ACCEPT WS-SYSIN-AREA   FROM  SYSIN
+           MOVE   WS-INTERVAL-DAYS  TO  WS-INTER-DAYS
+
+           EXEC SQL
+                SET :RUN-DATE    = CURRENT DATE
+                  , :WS-TARGET-DATE = CHAR(DATE(:PROC-DATE-ISO)
+                                    + :WS-INTER-DAYS DAYS )
+           END-EXEC.
+
+      *----------------------------------------------------------*
+       1300-OPEN-CURSOR.
+      *----------------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 1300-OPEN-CURSOR.      '.
+
+           EXEC SQL
+                OPEN csr-cc-decline
+           END-EXEC.
+
+           EVALUATE  SQLCODE
+               WHEN  +0
+                     CONTINUE
+               WHEN  OTHER
+                     MOVE '1300-OPEN-CURSOR'  TO MD900-PARAGRAPH-NAME
+                     MOVE 'ERROR OPENING CURSOR' TO MD900-ERROR-MSG-1
+                     SET   MD900-DB2-FUNCTION-FETCH TO TRUE
+                     DISPLAY MD900-ERROR-MSG-1
+                     PERFORM Z9994-FILL-ABEND-DATA
+                     PERFORM 8000-CLOSE-CURSOR
+                     PERFORM Z9999-ABEND
+           END-EVALUATE.
+
+      *--------------------------------------------------*
+       2000-PROCESS-CURSOR.
+      *--------------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 2000-PROCESS-CURSOR.   '.
+
+           EXEC SQL
+                FETCH csr-cc-decline
+                 INTO :ws-CLUB
+                     ,:WS-MEMBER-ID
+                     ,:WS-CUST-ID
+           END-EXEC.
+
+           EVALUATE  SQLCODE
+               WHEN  +0
+                     IF  WS-CLUB     >  SPACES  AND
+                         WS-CUST-ID  >  ZEROES
+                         PERFORM  3000-GENERATE-SMS-PUSH
+                         ADD  1  TO  WS-EXTRACT-CTR
+                     END-IF
+               WHEN  +100
+                     SET NO-MORE-TO-FETCH         TO TRUE
+               WHEN  OTHER
+                     MOVE '2000-PROCESS'  TO MD900-PARAGRAPH-NAME
+                     MOVE 'ERROR OPENING CURSOR' TO MD900-ERROR-MSG-1
+                     SET   MD900-DB2-FUNCTION-FETCH TO TRUE
+                     DISPLAY MD900-ERROR-MSG-1
+                     PERFORM Z9994-FILL-ABEND-DATA
+                     PERFORM 8000-CLOSE-CURSOR
+                     PERFORM Z9999-ABEND
+           END-EVALUATE.
+
+      *-----------------------------------------------*
+       3000-GENERATE-SMS-PUSH.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 3000-GENERATE-SMS-PUSH. '.
+
+           PERFORM 7000-CALL-MC501BCD
+      * MEM-482325 START
+           IF  WS-PHONE-NUMBER  >  ZEROES
+               PERFORM  4000-WRITE-SMS-RECORD
+      *        PERFORM 7100-CHECK-CONSENT
+           END-IF.
+
+      *    IF  MEMBER-CONSENT-YES
+      *        PERFORM  4000-WRITE-SMS-RECORD
+      *    END-IF.
+      * MEM-482325 END
+
+           PERFORM  5000-WRITE-PUSH-RECORD.
+
+      *-----------------------------------------------*
+       4000-WRITE-SMS-RECORD.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING.. 4000-WRITE-SMS-RECORD.  '.
+
+           INITIALIZE  WS-SMS-DETAIL-RECORD.
+
+           MOVE  WS-CUST-ID       TO  WS-CUSTOMER-ID
+           MOVE  WS-CUSTOMER-ID   TO  WS-SMS-SUBS-KEY
+                                      WS-SMS-CUST-ID
+           MOVE  WS-PHONE-NUMBER  TO  WS-SMS-PHONE-NO
+           MOVE 'en-US'           TO  WS-SMS-LOCALE
+           MOVE  WS-CLUB          TO  WS-SMS-CLUB-CODE
+           MOVE  MD930-PROC-DATE  TO  WS-SMS-EXTRACT-DT
+      **** MEM-479718 START
+           MOVE  WS-FIRST-NAME    TO  WS-SMS-FIRST-NAME
+      **** MEM-479718 END
+
+           WRITE  SMS-RECORD    FROM  WS-SMS-DETAIL-RECORD.
+           ADD  1  TO  WS-SMS-WRITE-CTR.
+
+
+      *-----------------------------------------------*
+       5000-WRITE-PUSH-RECORD.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..  5000-WRITE-PUSH-RECORD. '.
+
+           INITIALIZE  WS-PUSH-DETAIL-RECORD.
+
+           MOVE  WS-CUST-ID       TO  WS-CUSTOMER-ID
+           MOVE  WS-CUSTOMER-ID   TO  WS-PUSH-SUBS-KEY
+                                      WS-PUSH-CUST-ID
+           MOVE  MD930-PROC-DATE  TO  WS-PUSH-EXTRACT-DT
+           MOVE 'PUSH'            TO  WS-PUSH-MESSAGE-TYP
+           MOVE  WS-CLUB          TO  WS-PUSH-CLUB-CODE
+           MOVE 'en-US'           TO  WS-PUSH-LOCALE
+      **** MEM-479718 START
+           MOVE  WS-FIRST-NAME    TO  WS-PUSH-FIRST-NAME
+      **** MEM-479718 END
+
+           WRITE  PUSH-RECORD   FROM  WS-PUSH-DETAIL-RECORD.
+           ADD  1  TO  WS-PUSH-WRITE-CTR.
+
+
+      *-----------------------------------------------*
+       7000-CALL-MC501BCD.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..  7000-CALL-MC501BCD.     '.
+
+           INITIALIZE  MC501-INPUT-OUTPUT
+                       MEMBER-CONSENT-SW
+                       WS-PHONE-NUMBER.
+
+           MOVE  WS-CUST-ID          TO MC501-I-CUSTOMER-NUMBER.
+           MOVE '01'                 TO MC501-I-LOB-CODE.
+           MOVE 'MD022CC '           TO MC501-I-CALLING-PROGRAM.
+           MOVE '00'                 TO MC501-I-ROLE-CODE.
+
+           MOVE 'Y'                  TO MC501-I-REQ-ALL-CUST-DATA.
+           MOVE 'Y'                  TO MC501-I-REQ-ALL-CUST-PHONE.
+
+           CALL MC501BCD       USING  MC501-INPUT-OUTPUT.
+
+           EVALUATE MC501-O-RETURN-CODE
+           WHEN ZERO
+      **** MEM-479718 START
+                MOVE MC501-O-FIRST-NAME  TO WS-FIRST-NAME
+      **** MEM-479718 END
+                INITIALIZE  WS-PHONE-FOUND-SW
+                PERFORM VARYING PHONE-IND FROM 1 BY 1
+                  UNTIL PHONE-IND > MC501-O-NUM-OF-PHONES
+                        OR PHONE-FOUND
+                   IF MC501-O-PH-ROLE       (PHONE-IND)   = 'CL'    AND
+                      MC501-O-PH-VALID-CODE (PHONE-IND)   = '1'     AND
+                      MC501-O-PH-EXP-DATE (PHONE-IND) = '99991231'  AND
+                      MC501-O-PH-AREA-CODE  (PHONE-IND)   >  ZEROES AND
+                      MC501-O-PH-PREFIX     (PHONE-IND)   >  ZEROES AND
+                      MC501-O-PH-SUFFIX     (PHONE-IND)   >  ZEROES
+                      MOVE  MC501-O-PH-AREA-CODE (PHONE-IND)
+                        TO  WS-PHONE-AREA-C
+                      MOVE  MC501-O-PH-PREFIX (PHONE-IND)
+                        TO  WS-PHONE-PRFX-C
+                      MOVE  MC501-O-PH-SUFFIX (PHONE-IND)
+                        TO  WS-PHONE-SUFX-C
+                      SET   PHONE-FOUND  TO  TRUE
+                   END-IF
+                END-PERFORM
+           WHEN OTHER
+                DISPLAY '********************************************'
+                DISPLAY '** ERROR CALLING MC501   USING CLUB/MBR:  **'
+                DISPLAY '** '
+                        FK-ACL-CLUB-C
+                        '/'
+                        MBRSHP-N OF MBRSHP-HOUSEHOLD
+                DISPLAY '********************************************'
+                DISPLAY '**MC501-O-RETURN-CODE: ' MC501-O-RETURN-CODE
+                DISPLAY '**MC501-O-RETURN-MESSAGE: '
+                                                MC501-O-RETURN-MESSAGE
+                MOVE FK-ACL-CLUB-C       TO MD900-KEY-DATA-LN (1)
+                MOVE MBRSHP-N            TO MD900-KEY-DATA-LN (2)
+                MOVE MC501-O-RETURN-CODE TO MD900-KEY-DATA-LN (3)
+                STRING 'BAD RETURN CODE FROM MC501BCD: '
+                       MC501-O-RETURN-CODE  DELIMITED BY SIZE
+                                       INTO MD900-ERROR-MSG-1
+                MOVE MC501-O-RETURN-MESSAGE
+                                         TO MD900-ERROR-MSG-2
+                MOVE MC501BCD            TO MD900-PGM-NAME
+                                            MD900-TABLE-CURSOR-NAME
+                MOVE 'S2000-CALL-MC501BCD'
+                                         TO MD900-PARAGRAPH-NAME
+                PERFORM  8000-CLOSE-CURSOR
+                PERFORM  Z9999-ABEND
+           END-EVALUATE.
+
+      * MEM-482325 START
+      *7100-CHECK-CONSENT.
+      *    DISPLAY '..PROCESSING..  7100-CHECK-CONSENT.     '.
+      *
+      *    INITIALIZE                       MC556-INPUT-OUTPUT
+      *                                     MC900-ERROR-DATA
+      *                                     MD900-ERROR-DATA.
+      *
+      *    MOVE WS-PGM-NAME              TO MC556-I-CALLING-PGM.
+      *    MOVE MC501-O-CUST-NUMBER      TO MC556-I-CUSTOMER-NUMBER.
+      *    MOVE WS-PHONE-AREA-C          TO MC556-I-AREA-CODE.
+      *    MOVE WS-PHONE-PRFX-C          TO MC556-I-PREFIX-NUMBER.
+      *    MOVE WS-PHONE-SUFX-C          TO MC556-I-SUFFIX-NUMBER.
+      *    MOVE 'RECEIVED'               TO MC556-I-AUTH-STAT-CODE.
+      *
+      *    SET MC556-INQ-CUST-PHONE      TO TRUE.
+      *
+      *    CALL  MC556BR              USING MC556-INPUT-OUTPUT
+      *                                   , MC900-ERROR-DATA.
+      *
+      *    EVALUATE  MC900-RETURN-CODE
+      *    WHEN +000
+      *         IF  MC556-O-AUTHORIZED-FLAG  = 'Y'
+      *             SET MEMBER-CONSENT-YES     TO TRUE
+      *         ELSE
+      *             SET MEMBER-CONSENT-NO      TO TRUE
+      *         END-IF
+      *    WHEN OTHER
+      *         SET MEMBER-CONSENT-NO          TO TRUE
+      *    END-EVALUATE.
+      *
+      * MEM-482325 END
+
+      *-----------------------------------------------*
+       8000-CLOSE-CURSOR.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..  8000-CLOSE-CURSOR.      '.
+
+           EXEC SQL
+                CLOSE csr-cc-decline
+           END-EXEC.
+
+      *-----------------------------------------------*
+       9999-FINAL-RTN.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..   9999-FINAL-RTN.        '.
+
+           PERFORM  8000-CLOSE-CURSOR.
+
+           DISPLAY '*** NUMBER OF EXTRACTED RECORDS    : '
+               WS-EXTRACT-CTR
+           DISPLAY '*** NUMBER OF SMS  RECORDS WRITTEN : '
+               WS-SMS-WRITE-CTR
+           DISPLAY '*** NUMBER OF PUSH RECORDS WRITTEN : '
+               WS-PUSH-WRITE-CTR.
+
+      *-----------------------------------------------*
+       Z9994-FILL-ABEND-DATA.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..   Z9994-FILL-ABEND-DATA. '.
+
+           SET MD900-RC-DB2-SQL-ERROR    TO TRUE
+           MOVE SQLCODE                  TO MD900-SQLCODE
+           MOVE SQLCA                    TO MD900-SQLCA.
+
+      *-----------------------------------------------*
+       Z9999-ABEND.
+      *-----------------------------------------------*
+      *    DISPLAY '..PROCESSING..   Z9999-ABEND.           '.
+
+           COPY MRD902C.
+      ********************** END OF PROGRAM ***********************
+      ***              E N D   OF   M D 0 2 2 L P              ****
+      ********************** END OF PROGRAM ***********************

@@ -1,0 +1,2220 @@
+      ***********************M D 0 5 8 C B******************************
+      * THIS PROGRAM WILL READ IN A CCREJ FILE FROM EFT, READ HOUSEHOLD*
+      * TABLE TO VERIFY BILLPLAN IS AC. IF BILLPLAN IS AC WILL CHANGE  *
+      * BILLPLAN TO AM, OTHERWISE WILL WRITE RECORD TO EMS_WORK_CAU    *
+      * IN LATER STEP RECORDS WILL BE UNLOADED AND AN OUT-OF-SYNC      *
+      * REPORT WILL BE CREATED FROM THOSE RECORDS.                     *
+      * IF BILLPLAN IS CHANGED TO AM RECORD WILL BE WRITTEN TO         *
+      * EMS_WORK_CAU TABLE FOR EIP LETTER TO BE SENT TO MAILING ADDRESS*
+      *IF BILLPLAN IS AC AND MEMBER LIVES OUT OF TERRITORY, RECORD     *
+      *WILL BE WRITTEN TO EMS_WORK_CAU AND FILE WILL BE CREATED IN     *
+      *LATER STEP.                                                     *
+      ******************************************************************
+      ******************************************************************
+      *                          UPDATES                               *
+      *  WHEN    WHO                  WHAT                             *
+      * ======== === ==================================================*
+      * 04/01/14 WVH SR1014908 CHANGING FROM MONTHLY TO SEMI-MONTHLY   *
+      * 04/18/14 CS0307 SR1014857 LODGES 94,95,96,99 COMBINED          *
+      *                        INTO ONE LODGE 99. CALLING MC501 TO     *
+      *                        GET LODGE TYPE TO DISTINGUISH OLD LODGE *
+      *                        DEFINITION FROM THE NEW ONE.            *
+      * 06/12/14 CS0182 IM4256690: CORRECT INPUTS TO MC501             *
+      * 07/15/14 SF  MEM-13-06 RECOMPILE FOR COPYBOOK CHG              *
+      * 12/16/14 SIF SR1015249 SET UP TO MOVE THE LETTER TO NEW PROCS  *
+      * 02/05/15 PEB INT-14-02 RECOMPILE FOR CHANGE: EMSWKLTR/MRD607C  *
+      * 02/10/15 CT  INT-14-02 ADDED NEW FIELDS TO EMS_WORK_LETTER     *
+      *              CRD-ISS-RSN
+      *              LTR-ROLE
+      *              SPINOF-ROLES
+      * 02/27/17 MD  MEM-16-06 ADDED LETTER 168 FOR MP BILL PLAN       *
+      *
+      * 08/14/25 MD  MEM-481270 UPDATED SMS CHECK FOR ZERO TELEPONE    *
+      *                         NUMBERS AND TOOK OFF EXTRA SPACES AT   *
+      *                         END OF THE FILE. ADDED COUNTRY CODE    *
+      *
+      * 01/15/26 PM  MEM-481325 CAU-SUPPRESS PRINT LETTER FOR MEMBERS  *
+      *                         AT -23 TO -17                          *
+      *                                                                *
+      * 10/14/25 FA  MEM-481283 MEMBERSHIP COMMUNICATION VISIBILITY    *
+      *                         UPDATE THE CORRESPONDENCE TABLE FOR    *
+      *                         ALL EMAIL, SMS AND PUSH CORRESPONDENCE *
+      ******************************************************************
+      *                                                                *
+      * CALLED PROGRAMS:                                               *
+      *  1. MC501BCD.. CUSTOMER DATA CSR                               *
+      *  2. MC502BCD.. CUSTOMER PRODUCT DATA CSR                       *
+      *  3. MD300MA... MAINTAIN MEMBERSHIP CORRESPONDENCE TABLE        *
+      *  4. MD380MA... MANAGE MEMBERSHIP HOUSEHOLD TABLE               *
+      *  5. MD607BR... DETERMINE LETTER PROCESSING PATH                *
+      *  6. MD610BR... MANAGE MEMBERSHIP DUES                          *
+      *  7. MD630BR... MANAGE MEMBERSHIP SUMMARY AND SUMMARY DETAILS   *
+      *  8. MD614BR... MANAGE MEMBERSHIP NEXT EVENT                    *
+      *  9. MD699BR... MANAGE MEMBERSHIP BUSINESS RULES                *
+      * 10. MD910BR... RESTART CSR                                     *
+      * 11. MD920BR... GET JOB NAME                                    *
+      * 12. MD930BR... GET dates                                       *
+      * COPYBOOKS:                                                     *
+      *  1. EFT207C....INPUT EFT FILE COPYBOOK                         *
+      *  2. MRD058C....SYNC OUTPUT LAYOUT                              *
+      *  3. MRDR04C....CLUB INFO BUSINESS GROUP COPYBOOK               *
+      *  4. MRD250C....OUTPUT EIP LETTER FORMAT - OLD PATH             *
+      *  5. MRD380C....MEMBERSHIP HOUSEHOLD CSR COPYBOOK               *
+      *  6. MRD607C....CSR MD607BR - DETERMINE LETTER PATH             *
+      *  7. MRD610C....MANAGE MEMBERSHIP AMOUNT DUE COPYBOOK           *
+      *  8. MRD614C....MEMBERSHIP NEXT EVENT CSR COPYBOOK              *
+      *  9. MRD630C....MEMBERSHIP SUMMARY/SUM DETAIL CSR COPYBOOK      *
+      * 10. MAC501C....CUSTOMER DATA CSR COPYBOOK                      *
+      * 11. MAC502C... CUSTOMER PRODUCT DATA CSR COPYBOOK              *
+      * 12. MRD900C....COMMON COPYBOOK FOR CSR RETURN INFORMATION.     *
+      * 13. MRD901C....COMMON ABEND ROUTINE COPYBOOK.                  *
+      * 14. MRD902C....COMMON ABEND ROUTINE.                           *
+      * 15. MRD903C....COMMON COPYBOOK FOR SQL ERRORS.                 *
+      * 16. MRD906C....COMMON ROLLBACK COPYBOOK FOR SQL ERRORS         *
+      * 17. MRD910C....CHECKPOINT RESTART COPYBOOK                     *
+      * 18. MRD910CA...CHECKPOINT RESTART LOGIC COPYBOOK               *
+      * 19. MRD910CB...CHECKPOINT RESTART LOGIC COPYBOOK               *
+      * 20. MRD910CC...CHECKPOINT RESTART LOGIC COPYBOOK               *
+      * 21. MRD910CD...CHECKPOINT RESTART LOGIC COPYBOOK               *
+      * DB2 TABLES:                                                    *
+      *  1. MBRSHP_HOUSEHOLD                                           *
+      *  2. AAA_CLUBS_TB                                               *
+      *  3. MBRSHP_NEXT_EVENT                                          *
+      *  4. EMS_WORK_CAU                                               *
+      *  5. EMS_WORK_LETTER                                            *
+      * DCLGENS:                                                       *
+      *  1. MBRHSHLD....MEMBERSHIP HOUSEHOLD                           *
+      *  2. EMSWKCAU....WORK CAU TABLE                                 *
+      *  3. EMSWKLTR....WORK LETTER TABLE.                             *
+      * INPUT FILES/TABLES:                                            *
+      *  1. DATE-FILE                                                  *
+      *  2. EFT-FILE                                                   *
+      * OUTPUT FILES:                                                  *
+      *  1. OUT-FILE........OUT OF SYNC MEMBERS BETWEEN CAU FILE AND   *
+      *                     HOUSEHOLD TABLE                            *
+      *  1. OUT-EIP.........FILE OF MEMBERS IN CAU FILE THAT HAVE      *
+      *                     CHANGED BILLPLAN FROM AC TO AM FOR EIP     *
+      ******************************************************************
+
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MD058CB.
+       INSTALLATION. ACSC.
+       DATE-WRITTEN. MAY  2009.
+       DATE-COMPILED.
+       AUTHOR.   C. THORNLOW.
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+
+       INPUT-OUTPUT SECTION.
+
+       FILE-CONTROL.
+      * MEM-16-06 BEGINS
+      *         SELECT DATE-FILE ASSIGN TO PROCDATE
+      *             FILE STATUS IS JOBDATE-STATUS.
+      * MEM-16-06 ENDS
+                SELECT CAUCCREJ-FILE  ASSIGN TO CAUCCREJ
+                    FILE STATUS IS CAUCCREJ-STATUS.
+
+      * MEM-480905 START
+           SELECT MD058CB-OUTPUT-SMS   ASSIGN TO OUTSMS
+                                       FILE STATUS IS MD058SF-STATUS.
+
+           SELECT MD058CB-OUTPUT-PUSH  ASSIGN TO OUTPSH
+                                       FILE STATUS IS MD058PF-STATUS.
+
+           SELECT MD058CB-OUTPUT-EMAIL ASSIGN TO OUTEML
+                                       FILE STATUS IS MD058EF-STATUS.
+
+      * MEM-480905 END
+
+       DATA DIVISION.
+
+       FILE SECTION.
+
+      * MEM-16-06 BEGINS
+      *FD  DATE-FILE
+      *     LABEL RECORDS ARE STANDARD
+      *     BLOCK CONTAINS 0 RECORDS
+      *     RECORDING MODE IS F
+      *     DATA RECORD IS DATEREC.
+      *
+      *01   DATEREC                       PIC  X(80).
+      * MEM-16-06 ENDS
+
+       FD  CAUCCREJ-FILE
+            LABEL RECORDS ARE STANDARD
+            BLOCK CONTAINS 0 RECORDS
+            RECORDING MODE IS F
+            DATA RECORD IS CURR-CCR-REC.
+
+       01   CURR-CCR-REC                  PIC  X(112).
+
+      * MEM-480905 START
+       FD  MD058CB-OUTPUT-SMS
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+      * MEM-481270 START
+       01  MD058CB-OUTPUT-SMS-REC         PIC  X(111).
+      * MEM-481270 END
+
+       FD  MD058CB-OUTPUT-PUSH
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  MD058CB-OUTPUT-PUSH-REC        PIC  X(133).
+
+       FD  MD058CB-OUTPUT-EMAIL
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  MD058CB-OUTPUT-EMAIL-REC       PIC  X(133).
+
+      * MEM-480905 END
+
+       WORKING-STORAGE SECTION.
+       01  FILLER                         PIC  X(45) VALUE
+           '*****  MD058CB WORKING STORAGE SECTION  *****'.
+
+       01  CALLED-PGMS.
+      * MEM-481283 START
+          05  WS-MD300MA                  PIC  X(08) VALUE 'MD300MA '.
+      * MEM-481283 END
+          05  WS-MD380MA                  PIC  X(08) VALUE 'MD380MA'.
+      *SR1015249 - 12/16/14 ADDED CSR THAT WILL DIVERT LETTERS TO NEW
+      *PROCESS.
+          05  WS-MD607BR                  PIC  X(08) VALUE 'MD607BR'.
+          05  WS-MD60BBR                  PIC  X(08) VALUE 'MD60BBR'.
+          05  WS-MD610BR                  PIC  X(08) VALUE 'MD610BR'.
+          05  WS-MD614BR                  PIC  X(08) VALUE 'MD614BR'.
+          05  WS-MD699BR                  PIC  X(07) VALUE 'MD699BR'.
+      * MEM-481325 START
+          05  WS-UT020DT                  PIC  X(07) VALUE 'UT020DT'.
+      * MEM-481325 END
+          05  WS-MD910BR                  PIC  X(08) VALUE 'MD910BR'.
+          05  WS-MD920BR                  PIC  X(08) VALUE 'MD920BR'.
+      * MEM-16-06 BEGINS
+          05  WS-MD930BR                  PIC  X(08) VALUE 'MD930BR'.
+      * MEM-16-06 ENDS
+          05  WS-MD630BR                  PIC  X(07) VALUE 'MD630BR'.
+      *SR1014857
+          05  WS-MC501BCD                 PIC  X(08) VALUE 'MC501BCD'.
+      *SR1014857
+          05  MC502BCD                    PIC  X(08) VALUE 'MC502BCD'.
+
+       01  WS-DATEREC.
+           05  WS-RUN-DATE                PIC  X(10).
+           05  FILLER                     PIC  X(70) VALUE SPACES.
+
+       01  WS-CURRENT-TIMESTAMP           PIC  X(26).
+
+       01  WS-MISC-SW.
+      * MEM-16-06 BEGINS
+      *    05  WS-DATE-FILE-FLAG          PIC  X(01) VALUE 'N'.
+      *        88  DATE-EOF                          VALUE 'Y'.
+      * MEM-16-06 ENDS
+           05  WS-CAUCCREJ-FILE-FLAG      PIC  X(01) VALUE 'N'.
+               88  CAUCCREJ-EOF                      VALUE 'Y'.
+           05  WS-SKIP-RECORD-FLAG        PIC  X(01) VALUE 'N'.
+               88  SKIP-RECORD-YES                   VALUE 'Y'.
+               88  SKIP-RECORD-NO                    VALUE 'N'.
+      * MEM-481325 START
+           05  WS-SKIP-PRINT-FLAG         PIC  X(01) VALUE 'N'.
+               88  DO-NOT-PRINT                      VALUE 'N'.
+               88  DO-PRINT                          VALUE 'Y'.
+      * MEM-481325 END
+       01  WS-FLAGS.
+           05  WS-EOF-INPUT-FLAG          PIC  X(01) VALUE 'N'.
+               88  WS-EOF-INPUT                      VALUE 'Y'.
+               88  WS-EOF-INPUT-NO                   VALUE 'N'.
+           05  WS-PROCESS-SW              PIC  X(01) VALUE 'Y'.
+               88  CONTINUE-TO-PROCESS               VALUE 'Y'.
+               88  DO-NOT-PROCESS                    VALUE 'N'.
+      * MEM-16-06 Begins
+           05  WS-BP-CALC-MONTHLY-DUE-I     PIC X(01) VALUE SPACES.
+               88  BP-CALC-MONTHLY-DUE           VALUE 'Y'.
+      * MEM-16-06 Ends
+      * MEM-480905 START
+           05  WS-FIRST-PUSH-SW           PIC  X(01) VALUE 'Y'.
+               88  FIRST-PUSH                        VALUE 'Y'.
+               88  NOT-FIRST-PUSH                    VALUE 'N'.
+           05  WS-FIRST-SMS-SW            PIC  X(01) VALUE 'Y'.
+               88  FIRST-SMS                         VALUE 'Y'.
+               88  NOT-FIRST-SMS                     VALUE 'N'.
+           05  WS-FIRST-EMAIL-SW          PIC  X(01) VALUE 'Y'.
+               88  FIRST-EMAIL                       VALUE 'Y'.
+               88  NOT-FIRST-EMAIL                   VALUE 'N'.
+           05  WS-GET-NAME-SW             PIC  X(01) VALUE 'N'.
+               88  GET-NAME                          VALUE 'Y'.
+               88  NO-GET-NAME                       VALUE 'N'.
+           05  WS-EMAIL-FOUND-SW          PIC  X(01) VALUE 'Y'.
+               88  EMAIL-FOUND                       VALUE 'Y'.
+               88  NO-EMAIL-FOUND                    VALUE 'N'.
+           05  WS-PHONE-FOUND-SW          PIC  X(01) VALUE 'Y'.
+               88  PHONE-FOUND                       VALUE 'Y'.
+               88  NO-PHONE-FOUND                    VALUE 'N'.
+      * MEM-480905 END
+
+       01  FILE-STATUS.
+           05  CAUCCREJ-STATUS            PIC  X(02).
+           05  OUTRPT-STATUS              PIC  X(02).
+      * MEM-480905 START
+           05  MD058SF-STATUS             PIC  X(02).
+           05  MD058PF-STATUS             PIC  X(02).
+           05  MD058EF-STATUS             PIC  X(02).
+      * MEM-480905 END
+           05  OUTFILE-STATUS             PIC  X(02).
+           05  JOBDATE-STATUS             PIC  X(02).
+
+       01  WS-MISC-VARIABLES.
+      * MEM-481325 START
+           05  WS-DATE-10.
+               10  WS-DATE-10-MM               PIC X(2).
+               10  WS-DATE-10-FILL-2           PIC X.
+                   88  VALID-HYPHEN-2          VALUE  '/'.
+               10  WS-DATE-10-DD               PIC X(2).
+               10  WS-DATE-10-FILL-1           PIC X.
+                   88  VALID-HYPHEN-1          VALUE  '/'.
+               10  WS-DATE-10-CC               PIC X(2).
+               10  WS-DATE-10-YY               PIC X(2).
+      * MEM-481325 END
+           05  WS-PROCESS-DATE            PIC  X(08).
+           05  WS-PGM-NAME                PIC  X(08) VALUE 'MD058CB '.
+           05  WS-CAU-LETTER              PIC  X(03) VALUE '068'.
+           05  WS-AMOUNT-DUE              PIC  9(04)V99.
+           05  WS-BADSQL-COUNT            PIC  9(05) VALUE 0.
+           05  WS-DUEBY-DT                PIC  X(10) VALUE SPACES.
+           05  WS-BILL-PLAN               PIC  X(02) VALUE SPACES.
+           05  WS-BILPLN-NXTEVT           PIC  X(02) VALUE SPACES.
+           05  WS-NAME-ABBREV             PIC  X(02).
+           05  WS-LAST-CLUB-C             PIC  X(03).
+           05  WS-ISO-DATE.
+               10  WS-ISO-YEAR            PIC  X(04).
+               10  FILLER                 PIC  X(01) VALUE '-'.
+               10  WS-ISO-MONTH           PIC  X(02).
+               10  FILLER                 PIC  X(01) VALUE '-'.
+               10  WS-ISO-DAY             PIC  X(02).
+           05  WS-REGION-N                PIC S9(04) COMP VALUE +0.
+           05  WS-CLUB-C                  PIC  X(03) VALUE SPACES.
+           05  WS-MBRSHP-N                PIC  X(09) VALUE SPACES.
+           05  WK-DISPLAY-SQLCODE         PIC ---------9.
+           05  WS-LETTER-168-C            PIC X(03) VALUE '168'.
+           05  SUB1                       PIC 9(02).
+      * MEM-481283 START
+           05  WS-HOLD-CORR-TYPE          PIC x(03) VALUE SPACES.
+      * MEM-481283 END
+      * MEM-480905 START
+           05  WS-HOLD-CUST-NO-N          PIC 9(15).
+           05  WS-HOLD-CUST-NO REDEFINES
+               WS-HOLD-CUST-NO-N          PIC X(15).
+      * MEM-481270 START
+           05  WS-HOLD-CELL-NUMBER.
+             10  WS-HOLD-CL-CCODE         PIC  9(01) VALUE 0.
+             10  WS-HOLD-CL-AREA          PIC  9(03) VALUE 0.
+             10  WS-HOLD-CL-PREF          PIC  9(03) VALUE 0.
+             10  WS-HOLD-CL-SUFF          PIC  9(04) VALUE 0.
+      * MEM-481270 END
+           05  WS-HOLD-EMAIL-ADDR         PIC  X(50) VALUE SPACES.
+           05  WS-OUTPUT-CELL-COUNT       PIC  9(05) VALUE 0.
+           05  WS-OUTPUT-SMS-COUNT        PIC  9(05) VALUE 0.
+           05  WS-OUTPUT-EMAIL-COUNT      PIC  9(05) VALUE 0.
+      * MEM-480905 END
+
+       01  WS-MBR-NAME.
+           05  WS-FIRST-NAME              PIC  X(25).
+           05  WS-LAST-NAME               PIC  X(25).
+      *SR1014857
+           05  WS-MACS-LODGE-TYPE         PIC  X(001).
+               88 OUTOF-TERRITORY                 VALUE '1' '3' '4' '6'.
+      *SR1014857
+
+       01  WS-RESTART-WORK-AREA.
+           05  WS-COMMIT-FREQ-CT          PIC S9(09) COMP VALUE +0.
+           05  WS-RETRY-CT                PIC S9(09) COMP VALUE +0.
+           05  WS-SAVED-CNT               PIC S9(09) COMP VALUE +0.
+           05  WS-PROCESSING-D            PIC  X(010).
+           05  WS-RESTART-SAVE-DATA.
+               10  WS-TOT-HOUSEHOLD-DUES  PIC  999.99.
+               10  WS-TOT-MBRSHP-PROCD    PIC  9(09).
+               10  WS-OUT-OF-SYNC-CNT     PIC  9(09).
+               10  WS-OUT-OF-TERR-CNT     PIC  9(09).
+               10  WS-INPUT-CNT           PIC S9(09)     COMP.
+               10  WS-TOT-BILLPLAN-CHG    PIC  9(09).
+               10  WS-OUT-COUNT           PIC  9(09).
+               10  WS-OUT-LETTER-COUNT    PIC  9(09).
+               10  WS-OUT-LTR-168-CNT     PIC  9(09).
+               10  WS-SKIPPED-COUNT       PIC  9(09).
+               10  WS-TOT-DUES-REQUESTED  PIC  9(09)V99.
+
+       01  WS-MRDCCREJ-REC.
+           COPY EFT270C.
+
+       01  WS-OUTREC.
+           COPY MRD058C.
+
+      * MEM-481325 START
+       01  UTL020-DATE-AREAS.
+           COPY UTL020C.
+      * MEM-481325 END
+
+      * MEM-480905 START
+      /*****************************************************************
+      * OUTPUT SMS FILE
+      ******************************************************************
+       01  WS-SMS-OUT.
+           COPY MRD058SF.
+
+      /*****************************************************************
+      * OUTPUT PUSH FILE
+      ******************************************************************
+       01  WS-PUSH-OUT.
+           COPY MRD058PF.
+
+      /*****************************************************************
+      * OUTPUT EMAIL FILE
+      ******************************************************************
+       01  WS-EMAIL-OUT.
+           COPY MRD058EF.
+      * MEM-480905 END
+
+      /*****************************************************************
+      * CLUB-INFO-GRP BUSINESS GROUP
+      ******************************************************************
+       01  MD04-INPUT-OUTPUT-RECORD.
+           COPY MRDR04C.
+
+      * MEM-16-06 Begins
+      *----------------------------------------------------------------
+      *    MD48 LINK DATA - CLUB NAME
+      *----------------------------------------------------------------
+       01  MD48-INPUT-OUTPUT-RECORD.
+       COPY MRDR48C2.
+      /
+      * MEM-16-06 Ends
+      /*****************************************************************
+      * EIP BILLS AND LETTERS COPYBOOK
+      ******************************************************************
+       01  WS-OUTEIP.
+           COPY MRD250C.
+
+      * MEM-481283 START
+      /*****************************************************************
+      *** CORRESPONDENCE HISTORY                                     ***
+      ******************************************************************
+       01  MD300-RECORD.
+           COPY MRD300C.
+      * MEM-481283 END
+
+      /*****************************************************************
+      * MEMBERSHIP HOUSEHOLD                                           *
+      ******************************************************************
+       01  MD380C-RECORD.
+           COPY  MRD380C.
+
+      /*****************************************************************
+      *SR1015249 - 12/16/14 ADDED CSR THAT WILL DIVERT LETTERS TO NEW
+      *PROCESS.
+      * EIP BILLS AND LETTERS COPYBOOK
+      ******************************************************************
+       01  MD607-INPUT-OUTPUT.
+           COPY MRD607C.
+
+      ******************************************************************
+      * LINK AREA FOR MD60BBR
+      ******************************************************************
+       01  MD60B-INPUT-OUTPUT.
+           COPY MRD60BC.
+
+      /*****************************************************************
+      * MEMBERSHIP AMT DUES CALCULATION
+      ******************************************************************
+       01  MD610-LINK-DATA.
+           EXEC SQL
+               INCLUDE  MRD610C
+           END-EXEC.
+
+      /*****************************************************************
+      *    MD614CR LINK DATA FOR DETERMINE NEXT EVENT
+      ******************************************************************
+       01  MD614-LINK-DATA.
+           EXEC SQL
+               INCLUDE  MRD614C
+           END-EXEC.
+
+      /*****************************************************************
+      * MEMBERSHIP SUMMARY/DETAIL COPYBOOK
+      ******************************************************************
+       01  MD630C-RECORD.
+           COPY  MRD630C.
+
+      /*****************************************************************
+      * MEMBERSHIP ERROR HANDLING
+      ******************************************************************
+       01  MD900-ERROR-DATA.
+           COPY MRD900C.
+
+      * MEM-16-06 BEGINS
+       01  MD930-LINK-DATA.
+           COPY MRD930C.
+      * MEM-16-06 ENDS
+
+       01  MD901-ERROR-DATA.
+           COPY MRD901C.
+
+       01  MD903-SQL-ERROR.
+           COPY MRD903C.
+      /*****************************************************************
+      *    MD910CR LINK DATA FOR RESTART/RECOVERY
+      ******************************************************************
+       01  MD910-LINK-DATA.
+           EXEC SQL
+               INCLUDE  MRD910C
+           END-EXEC.
+
+       01  MD960-LINK-DATA.
+           EXEC SQL
+               INCLUDE  MRD960C
+           END-EXEC.
+
+      /*****************************************************************
+      * CUSTOMER DETAILS
+      ******************************************************************
+       01  MC501-INPUT-OUTPUT.
+           EXEC SQL
+               INCLUDE  MAC501C
+           END-EXEC.
+
+      /*****************************************************************
+      *        MACS NAME AND ADDRESS FILE                              *
+      ******************************************************************
+       01  MC502-INPUT-OUTPUT.
+           COPY MAC502C.
+
+      /*****************************************************************
+      *         DCLGEN FOR MEMBERSHIP HOUSEHOLD                        *
+      ******************************************************************
+           EXEC SQL
+               INCLUDE MBRHSHLD
+           END-EXEC.
+
+      /*****************************************************************
+      * COBOL DECLARATION FOR EMS_WORK_CAU
+      ******************************************************************
+           EXEC SQL
+               INCLUDE EMSWKCAU
+           END-EXEC.
+
+      /*****************************************************************
+      *SR1015249 - 12/16/14
+      * COBOL DECLARATION FOR EMS_WORK_LETTER
+      ******************************************************************
+           EXEC SQL
+               INCLUDE EMSWKLTR
+           END-EXEC.
+
+      /*****************************************************************
+      * SQLCA
+      ******************************************************************
+           EXEC SQL
+               INCLUDE SQLCA
+           END-EXEC.
+
+      * MEM-480905 START
+      *----------------------------------------------------------------*
+      *    DCLGEN FOR CUST_PHONE                                       *
+      *----------------------------------------------------------------*
+           EXEC SQL
+                INCLUDE MACSCUPS
+           END-EXEC.
+
+      *----------------------------------------------------------------*
+      *    DCLGEN FOR CUST_EMAIL                                       *
+      *----------------------------------------------------------------*
+           EXEC SQL
+                INCLUDE MACSCUES
+           END-EXEC.
+
+      * MEM-480905 END
+
+      /*****************************************************************
+       PROCEDURE DIVISION.
+
+       0000-MAINLINE.
+
+           PERFORM 1000-INITIALIZE-ROUTINE.
+           PERFORM 6150-GET-TIMESTAMP
+           PERFORM 1500-PROCESS-FILE
+               UNTIL WS-EOF-INPUT
+
+           PERFORM 2050-EOF-ROUTINE.
+
+           GOBACK.
+
+      /*****************************************************************
+       1000-INITIALIZE-ROUTINE.
+           INITIALIZE
+                                               MD900-ERROR-DATA
+                                               MD614-LINK-DATA
+                                               MD910-LINK-DATA
+
+           CALL WS-MD920BR               USING MD901-JOB-NAME
+                                               MD900-ERROR-DATA
+
+           IF  MD900-RC-OK
+               CONTINUE
+           ELSE
+               PERFORM 9999-ABEND
+           END-IF.
+
+
+           MOVE SPACES                      TO WS-OUTREC.
+           MOVE SPACES                      TO WS-OUTEIP.
+           INITIALIZE                          WS-PROCESS-SW.
+      * MEM-16-06 BEGINS
+      *    OPEN INPUT DATE-FILE
+      *         IF  JOBDATE-STATUS NOT = 00
+      *             MOVE '1000-INITIALIZE     '
+      *                                     TO MD900-PARAGRAPH-NAME
+      *             MOVE WS-PGM-NAME        TO MD900-PGM-NAME
+      *             MOVE JOBDATE-STATUS     TO MD900-KEY-DATA-LN(1)
+      *             MOVE 'ERROR OPENING DATE-FILE'
+      *                                     TO MD900-ERROR-MSG-1
+      *             PERFORM 9999-ABEND
+      *         END-IF
+      * MEM-16-06 ENDS
+           OPEN INPUT CAUCCREJ-FILE
+                IF  CAUCCREJ-STATUS NOT = 00
+                    MOVE '1000-INITIALIZE     '
+                                            TO MD900-PARAGRAPH-NAME
+                    MOVE WS-PGM-NAME        TO MD900-PGM-NAME
+                    MOVE CAUCCREJ-STATUS    TO MD900-KEY-DATA-LN(1)
+                    MOVE 'ERROR OPENING CAUCCREJ-FILE'
+                                            TO MD900-ERROR-MSG-1
+                    PERFORM 9999-ABEND
+                END-IF
+
+      * MEM-480905 START
+           OPEN OUTPUT MD058CB-OUTPUT-SMS
+                IF  MD058SF-STATUS NOT = 00
+                    MOVE '1000-INITIALIZE     '
+                                            TO MD900-PARAGRAPH-NAME
+                    MOVE WS-PGM-NAME        TO MD900-PGM-NAME
+                    MOVE MD058SF-STATUS     TO MD900-KEY-DATA-LN(1)
+                    MOVE 'ERROR OPENING MD058CB-OUTPUT-SMS'
+                                            TO MD900-ERROR-MSG-1
+                    PERFORM 9999-ABEND
+                END-IF
+
+           OPEN OUTPUT MD058CB-OUTPUT-PUSH
+                IF  MD058PF-STATUS NOT = 00
+                    MOVE '1000-INITIALIZE     '
+                                            TO MD900-PARAGRAPH-NAME
+                    MOVE WS-PGM-NAME        TO MD900-PGM-NAME
+                    MOVE MD058PF-STATUS     TO MD900-KEY-DATA-LN(1)
+                    MOVE 'ERROR OPENING MD058CB-OUTPUT-PUSH'
+                                            TO MD900-ERROR-MSG-1
+                    PERFORM 9999-ABEND
+                END-IF
+
+           OPEN OUTPUT MD058CB-OUTPUT-EMAIL
+                IF  MD058EF-STATUS NOT = 00
+                    MOVE '1000-INITIALIZE     '
+                                            TO MD900-PARAGRAPH-NAME
+                    MOVE WS-PGM-NAME        TO MD900-PGM-NAME
+                    MOVE MD058EF-STATUS     TO MD900-KEY-DATA-LN(1)
+                    MOVE 'ERROR OPENING MD058CB-OUTPUT-EMAIL'
+                                            TO MD900-ERROR-MSG-1
+                    PERFORM 9999-ABEND
+                END-IF
+      * MEM-480905 END
+
+           PERFORM 1005-GET-PROC-DATE.
+           PERFORM 9900-RESTART-INIT
+
+      * MEM-480905 START
+           MOVE 'Y'                    TO WS-FIRST-PUSH-SW
+                                          WS-FIRST-SMS-SW
+                                          WS-FIRST-EMAIL-SW.
+      * MEM-480905 END
+
+           PERFORM 1200-READ-OR-REPOSITION
+           IF WS-INPUT-CNT = 0
+               DISPLAY '******************************************'
+               DISPLAY '** EMPTY INPUT FILE MD058IN   !!!       **'
+               DISPLAY '** NOTIFY EMS MAINTENANCE     !!!       **'
+               DISPLAY '******************************************'
+               GOBACK
+           END-IF.
+
+      ******************************************************************
+       1005-GET-PROC-DATE.
+
+      * MEM-16-06 BEGINS
+      *    PERFORM UNTIL DATE-EOF
+      *      READ DATE-FILE           INTO WS-DATEREC
+      *      AT END
+      *           SET DATE-EOF          TO TRUE
+      *           MOVE WS-RUN-DATE      TO WS-PROCESSING-D
+      *           MOVE WS-RUN-DATE(7:4) TO WS-PROCESS-DATE(1:4)
+      *                                    WS-ISO-YEAR
+      *           MOVE WS-RUN-DATE(1:2) TO WS-PROCESS-DATE(5:2)
+      *                                    WS-ISO-MONTH
+      *           MOVE WS-RUN-DATE(4:2) TO WS-PROCESS-DATE(7:2)
+      *                                    WS-ISO-DAY
+      *           CLOSE DATE-FILE
+      *      END-READ
+      *    END-PERFORM.
+
+           INITIALIZE MD930-LINK-DATA
+                      MD900-ERROR-DATA
+
+           CALL WS-MD930BR   USING MD930-LINK-DATA
+                                   MD900-ERROR-DATA
+
+           IF MD900-RC-OK
+              MOVE MD930-PROC-DATE           TO WS-RUN-DATE
+              MOVE WS-RUN-DATE               TO WS-PROCESSING-D
+              MOVE WS-RUN-DATE(7:4) TO WS-PROCESS-DATE(1:4)
+              MOVE WS-RUN-DATE(1:2) TO WS-PROCESS-DATE(5:2)
+              MOVE WS-RUN-DATE(4:2) TO WS-PROCESS-DATE(7:2)
+              MOVE MD930-ISO-DT     TO WS-ISO-DATE
+           ELSE
+               MOVE WS-PGM-NAME              TO MD900-PGM-NAME
+               MOVE '1200-GET-DATE'          TO MD900-PARAGRAPH-NAME
+               MOVE 'PROCESS DATE NOT FOUND' TO MD900-ERROR-MSG-1
+               PERFORM 9999-ABEND
+           END-IF
+
+           DISPLAY '** PROCESS DATE ' WS-PROCESS-DATE.
+
+      * MEM-16-06 ENDS
+      ************************************************************
+      *1200-READ-OR-REPOSTITION:                                 *
+      ************************************************************
+       1200-READ-OR-REPOSITION.
+
+
+           MOVE WS-INPUT-CNT             TO WS-SAVED-CNT
+           MOVE +0                       TO WS-INPUT-CNT
+
+           PERFORM 6000-READ-INPUT
+             UNTIL WS-INPUT-CNT > WS-SAVED-CNT
+                OR WS-EOF-INPUT.
+
+      * MEM-16-06 Begins
+      /************************************************************
+       1500-PROCESS-FILE.
+      *************************************************************
+
+           PERFORM 1600-CALL-MD380MA.
+
+           PERFORM 1700-GET-EIP-LETTER-GRP-RULES.
+
+           PERFORM 1800-IF-MONTHLY-PLAN.
+
+           IF BP-CALC-MONTHLY-DUE
+              PERFORM 2500-PROCESS-FILE
+           ELSE
+              PERFORM 2000-PROCESS-FILE-OLD
+           END-IF
+
+      * MEM-16-06 ENDS
+
+      * MEM-480905 START
+           PERFORM 1900-CREATE-OUTPUT-FILES.
+      * MEM-480905 END
+
+           PERFORM 9901-CHK-COMMIT-FREQ
+
+           PERFORM 6000-READ-INPUT.
+
+      * MEM-16-06 Begins
+      ******************************************************************
+      *  CALL MD380MA FOR HOUSEHOLD INFO                               *
+      ******************************************************************
+       1600-CALL-MD380MA.
+
+           INITIALIZE MD380-RETURN-INFORMATION.
+
+           SET MD380-READ-REQUESTED         TO TRUE.
+           SET MD380-READ-CLUB-MBR          TO TRUE.
+           MOVE WS-CLUB-C                   TO MD380-CLUB-C.
+           MOVE WS-MBRSHP-N                 TO MD380-MEMBER-NUMBER.
+
+           CALL WS-MD380MA               USING MD380C-RECORD.
+
+           EVALUATE MD380-RETURN-CODE
+           WHEN 00
+                MOVE MD380-DN-CUR-REG-N     TO WS-REGION-N
+      * MEM-480905 START
+                MOVE MD380-BILL-CUS-SYS-ID  TO WS-HOLD-CUST-NO-N
+      * MEM-480905 END
+
+           WHEN OTHER
+               DISPLAY 'MD380 RET CODE: ' MD380-RETURN-CODE
+               MOVE MD380-ERROR-SQLCODE    TO WK-DISPLAY-SQLCODE
+               DISPLAY 'MD380 ERROR SQL: ' WK-DISPLAY-SQLCODE
+               DISPLAY 'MD380 ERROR NAME: ' MD380-ERROR-PROBLEM-NAME
+
+               MOVE WS-MD380MA                 TO MD900-PGM-NAME
+               MOVE '1600-CALL-MD380MA'        TO MD900-PARAGRAPH-NAME
+               MOVE WS-CLUB-C                  TO MD900-KEY-DATA-LN(1)
+               MOVE WS-MBRSHP-N                TO MD900-KEY-DATA-LN(2)
+               MOVE WS-LETTER-168-C            TO MD900-KEY-DATA-LN(3)
+               IF  MD380-ERROR-PROBLEM-NAME > SPACES
+                   MOVE MD380-ERROR-PROBLEM-NAME
+                                               TO MD900-ERROR-MSG-1
+               ELSE
+                   MOVE ' ERROR WITH CALL TO MD380MA'
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+               IF  MD380-SQL-ERROR
+                   SET MD900-RC-DB2-SQL-ERROR  TO TRUE
+                   MOVE MD380-ERROR-SQLCODE    TO MD900-SQLCODE
+               ELSE
+                   MOVE MD380-RETURN-CODE TO MD900-RETURN-CODE
+               END-IF
+               PERFORM 9999-ABEND
+           END-EVALUATE.
+      /
+      ******************************************************************
+      *  CALL MD699BR FOR MD48 INFO                                    *
+      ******************************************************************
+       1700-GET-EIP-LETTER-GRP-RULES.
+
+           INITIALIZE                          MD48-INPUT
+                                               MD48-OUTPUT-DATA
+                                               MD900-ERROR-DATA.
+
+           MOVE WS-CLUB-C                      TO MD48-CLUB-CODE.
+           MOVE WS-REGION-N                    TO MD48-CLUB-REGION.
+
+           CALL WS-MD699BR          USING MD48-INPUT-OUTPUT-RECORD
+                                          MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               CONTINUE
+           ELSE
+               MOVE WS-MD699BR                  TO MD900-PGM-NAME
+               DISPLAY '*********************************************'
+               DISPLAY '**** ERROR CALLING MD699BR USING         ****'
+               DISPLAY '**** CLUB-GRP                            ****'
+               DISPLAY '*********************************************'
+               IF  MD900-ERROR-MSG-1 = SPACES
+                   MOVE 'PROBLEM RETRIEVING EIP-LETTER-GRP FROM MD699BR'
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+               IF  MD900-PARAGRAPH-NAME = SPACES
+                   MOVE '1700-GET-EIP-LETTER-GRP-RULES'
+                                               TO MD900-PARAGRAPH-NAME
+               END-IF
+               PERFORM 9999-ABEND
+           END-IF.
+      /
+      ******************************************************************
+      *  DETERMINE IF IT IS MONTHLY PLAN                               *
+      ******************************************************************
+       1800-IF-MONTHLY-PLAN.
+
+           MOVE SPACES            TO WS-BP-CALC-MONTHLY-DUE-I.
+
+           PERFORM
+               VARYING SUB1 FROM 1 BY 1
+               UNTIL   SUB1 > MD48-BILL-PLAN-RTD
+               OR      SUB1 > MD48-BILL-PLAN-MAX
+               OR      WS-BP-CALC-MONTHLY-DUE-I > SPACES
+               IF  MD48-BP-BILL-PLAN(SUB1) = MD380-BILL-PLAN-TYP-C
+                   MOVE MD48-BP-CALC-MONTHLY-DUE-I(SUB1)
+                     TO WS-BP-CALC-MONTHLY-DUE-I
+               END-IF
+           END-PERFORM.
+
+      * MEM-480905 START
+      /************************************************************
+       1900-CREATE-OUTPUT-FILES.
+      *************************************************************
+
+           IF NO-GET-NAME
+              PERFORM 8300-GET-NAME-ADDR
+           END-IF.
+
+           PERFORM 1910-GET-PHONE-NUMBER.
+
+           PERFORM 1930-GET-SMS-NUMBER.
+
+           PERFORM 1950-GET-EMAIL-ADDRESS.
+
+      /************************************************************
+       1910-GET-PHONE-NUMBER.
+      *************************************************************
+      *    MOVE SPACES                 TO WS-HOLD-CELL-NUMBER
+
+           PERFORM 8700-GET-CELL-NUMBER.
+
+           IF PHONE-FOUND
+              PERFORM 1920-BUILD-CELL-FILE
+           END-IF.
+
+      /************************************************************
+       1920-BUILD-CELL-FILE.
+      *************************************************************
+
+           INITIALIZE WS-PUSH-OUT.
+
+           MOVE WS-HOLD-CUST-NO        TO WS-PUSH-CUST-ID
+                                          WS-PUSH-SUBS-KEY.
+           MOVE E270-CLUB-CODE         TO WS-PUSH-CLUB-CODE.
+           MOVE MC502-O-CUST-FIRST-NAME(1)
+                                       TO WS-PUSH-FIRST-NAME.
+           MOVE MC502-O-MAIL-ZIP       TO WS-PUSH-ZIP-CODE.
+           MOVE E270-PRODUCT-ID        TO WS-PUSH-MEM-NO.
+           MOVE MC502-O-EXP-DATE (1:4) TO WS-PUSH-EXP-DT (7:4).
+           MOVE MC502-O-EXP-DATE (5:2) TO WS-PUSH-EXP-DT (1:2).
+           MOVE MC502-O-EXP-DATE (7:2) TO WS-PUSH-EXP-DT (4:2).
+           MOVE "/"                    TO WS-PUSH-EXP-DT (3:1)
+                                          WS-PUSH-EXP-DT (6:1).
+           MOVE E270-OLD-LST4-DIGIT-CC TO WS-PUSH-LAST-4.
+           MOVE 'en-US'                TO WS-PUSH-LOCALE.
+
+           IF FIRST-PUSH
+              PERFORM 7300-WRITE-OUTPUT-CELL-HDR
+              MOVE 'N'                 TO WS-FIRST-PUSH-SW
+           END-IF.
+
+      * MEM-481283 START
+           MOVE SPACES                 TO WS-HOLD-CORR-TYPE.
+           MOVE '868'                  TO WS-HOLD-CORR-TYPE.
+           PERFORM 1970-UPDATE-CORR-HIST.
+      * MEM-481283 END
+
+           PERFORM 7000-WRITE-OUTPUT-CELL-FILE.
+
+      /************************************************************
+       1930-GET-SMS-NUMBER.
+      *************************************************************
+
+           INITIALIZE WS-SMS-OUT.
+
+      *    PERFORM 8700-GET-CELL-NUMBER.
+
+      * MEM-481270 START
+           IF PHONE-FOUND
+              PERFORM 1940-BUILD-SMS-FILE
+           END-IF.
+      * MEM-481270 END
+
+      /************************************************************
+       1940-BUILD-SMS-FILE.
+      *************************************************************
+
+           MOVE WS-HOLD-CELL-NUMBER    TO WS-SMS-PHONE-NO.
+           MOVE WS-HOLD-CUST-NO        TO WS-SMS-CUST-ID
+                                          WS-SMS-SUBS-KEY.
+           MOVE E270-CLUB-CODE         TO WS-SMS-CLUB-CODE.
+           MOVE MC502-O-CUST-FIRST-NAME(1)
+                                       TO WS-SMS-FIRST-NAME.
+           MOVE MC502-O-MAIL-ZIP       TO WS-SMS-ZIP-CODE.
+           MOVE E270-PRODUCT-ID        TO WS-SMS-MEM-NO.
+           MOVE MC502-O-EXP-DATE (1:4) TO WS-SMS-EXP-DT (7:4).
+           MOVE MC502-O-EXP-DATE (5:2) TO WS-SMS-EXP-DT (1:2).
+           MOVE MC502-O-EXP-DATE (7:2) TO WS-SMS-EXP-DT (4:2).
+           MOVE "/"                    TO WS-SMS-EXP-DT (3:1)
+                                          WS-SMS-EXP-DT (6:1).
+           MOVE E270-OLD-LST4-DIGIT-CC TO WS-SMS-LAST-4.
+           MOVE 'en-US'                TO WS-SMS-LOCALE.
+
+           IF FIRST-SMS
+              PERFORM 7400-WRITE-OUTPUT-SMS-HDR
+              MOVE 'N'                 TO WS-FIRST-SMS-SW
+           END-IF.
+
+      * MEM-481283 START
+           MOVE SPACES                 TO WS-HOLD-CORR-TYPE.
+           MOVE '768'                  TO WS-HOLD-CORR-TYPE.
+           PERFORM 1970-UPDATE-CORR-HIST.
+      * MEM-481283 END
+
+           PERFORM 7100-WRITE-OUTPUT-SMS-FILE.
+
+      /************************************************************
+       1950-GET-EMAIL-ADDRESS.
+      *************************************************************
+
+           INITIALIZE WS-SMS-OUT.
+
+           MOVE SPACES                 TO WS-HOLD-EMAIL-ADDR
+
+           PERFORM 8800-GET-EMAIL-ADDRESS.
+
+           IF EMAIL-FOUND
+              PERFORM 1960-BUILD-EMAIL-FILE
+           END-IF.
+
+      /************************************************************
+       1960-BUILD-EMAIL-FILE.
+      *************************************************************
+           MOVE WS-HOLD-EMAIL-ADDR     TO WS-EMAIL-ADDRESS.
+           MOVE WS-HOLD-CUST-NO        TO WS-EMAIL-CUST-ID.
+           MOVE E270-CLUB-CODE         TO WS-EMAIL-CLUB-CODE.
+           MOVE MC502-O-CUST-FIRST-NAME(1)
+                                       TO WS-EMAIL-FIRST-NAME.
+           MOVE MC502-O-MAIL-ZIP       TO WS-EMAIL-ZIP-CODE.
+           MOVE E270-PRODUCT-ID        TO WS-EMAIL-MEM-NO.
+           MOVE MC502-O-EXP-DATE (1:4) TO WS-EMAIL-EXP-DT (7:4).
+           MOVE MC502-O-EXP-DATE (5:2) TO WS-EMAIL-EXP-DT (1:2).
+           MOVE MC502-O-EXP-DATE (7:2) TO WS-EMAIL-EXP-DT (4:2).
+           MOVE "/"                    TO WS-EMAIL-EXP-DT (3:1)
+                                          WS-EMAIL-EXP-DT (6:1).
+           MOVE E270-OLD-LST4-DIGIT-CC TO WS-EMAIL-LAST-4.
+
+           IF FIRST-EMAIL
+              PERFORM 7500-WRITE-OUTPUT-EMAIL-HDR
+              MOVE 'N'                 TO WS-FIRST-EMAIL-SW
+           END-IF.
+
+      * MEM-481283 START
+           MOVE SPACES                 TO WS-HOLD-CORR-TYPE.
+           MOVE '668'                  TO WS-HOLD-CORR-TYPE.
+           PERFORM 1970-UPDATE-CORR-HIST.
+      * MEM-481283 END
+
+           PERFORM 7200-WRITE-OUTPUT-EMAIL-FILE.
+
+      * MEM-480905 END
+      * MEM-481283 START
+      /************************************************************
+       1970-UPDATE-CORR-HIST.
+      *************************************************************
+
+           INITIALIZE                     MD300-RETURN-INFORMATION
+                                          MD300-PASSED-INFORMATION.
+
+           SET  MD300-UPDATE-REQUESTED TO TRUE.
+
+           SET  MD300-TODAYS-DATE      TO TRUE
+
+           MOVE 'ADD'                  TO MD300-ACTION-REQUESTED.
+
+           MOVE WS-CLUB-C              TO MD300-CLUB-CODE.
+
+           MOVE WS-MBRSHP-N            TO MD300-MEMBER-NUMBER
+                                          MD300-FK-MHH-MBRSHP-N(1).
+
+           MOVE WS-RUN-DATE            TO MD300-SEND-DATE
+                                          MD300-SEND-D(1)
+                                          MD300-PROCESSING-D(1)
+
+           MOVE 'Y'                    TO MD300-CHG-PROCESSING-D
+           MOVE 1                      TO MD300-INDICATOR
+
+           MOVE WS-CLUB-C              TO MD300-CMC-CLUB-CODE
+                                          MD300-FK-CMC-ACL-CLUB-C(1)
+                                          MD300-FK-MHH-ACL-CLUB-C(1).
+
+           MOVE '00'                   TO MD300-ROLE-CODE
+                                          MD300-FK-MBR-MRO-ROLE-C(1).
+           MOVE MD380-EFF-D            TO MD300-MBR-EFF-D
+                                          MD300-FK-MBR-EFF-D(1).
+
+           MOVE WS-HOLD-CORR-TYPE      TO MD300-CORR-TYPE
+                                          MD300-FK-CMC-CORR-TYPE-C(1).
+
+
+           CALL WS-MD300MA          USING MD300-RECORD.
+
+           EVALUATE TRUE
+           WHEN MD300-NO-ERRORS
+                CONTINUE
+           WHEN MD300-MEMBER-REC-NOT-FND
+                DISPLAY '**MBRSHIP IS CANCELLED       **'
+                        '**CORRESPONDENCE NOT WRITTEN **'
+                         WS-CLUB-C '/' WS-MBRSHP-N
+           WHEN MD300-ERROR-SQLCODE = 100
+                DISPLAY '**MBRSHIP MISSING            **'
+                        '**CORRESPONDENCE NOT WRITTEN **'
+                         WS-CLUB-C '/' WS-MBRSHP-N
+           WHEN OTHER
+               MOVE WS-MD300MA                 TO MD900-PGM-NAME
+               MOVE '1970-UPDATE-CORR-HIST'    TO MD900-PARAGRAPH-NAME
+               MOVE WS-CLUB-C                  TO MD900-KEY-DATA-LN(1)
+               MOVE WS-MBRSHP-N                TO MD900-KEY-DATA-LN(2)
+               MOVE WS-HOLD-CORR-TYPE          TO MD900-KEY-DATA-LN(3)
+               IF  MD300-ERROR-PROBLEM-NAME > SPACES
+                   MOVE MD300-ERROR-PROBLEM-NAME
+                                               TO MD900-ERROR-MSG-1
+               ELSE
+                   MOVE
+                    ' ERROR WITH CALL TO MD300MA - 1970-UPDATE '
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+
+               IF  MD300-SQL-ERROR
+                   SET MD900-RC-DB2-SQL-ERROR  TO TRUE
+                   MOVE MD300-ERROR-SQLCODE    TO MD900-SQLCODE
+               ELSE
+                   MOVE MD300-RETURN-CODE      TO MD900-RETURN-CODE
+               END-IF
+
+               PERFORM 9999-ABEND
+           END-EVALUATE.
+      * MEM-481283 END
+
+      /************************************************************
+       2000-PROCESS-FILE-OLD.
+      *************************************************************
+
+      * MEM-16-06 ENDS
+
+           SET SKIP-RECORD-NO                  TO TRUE.
+
+           IF  E270-CLUB-CODE          NOT  =  WS-LAST-CLUB-C
+               MOVE E270-CLUB-CODE             TO WS-LAST-CLUB-C
+               MOVE SPACES                     TO WS-NAME-ABBREV
+               PERFORM 8000-GET-CLUB-NAME-ABBREV
+      *SR1015249 - 12/16/14 - DETERMINE WHAT PATH THE LETTER SHOULD TAKE
+      *OLD = WORK-CAU OR NEW= WORK LETTER.
+               PERFORM 8100-DETERMINE-LETTER-PATH
+           END-IF.
+
+           PERFORM 8200-CHECK-BILLPLAN-AC.
+      * MEM-481325 START
+           PERFORM 8250-CHECK-NBR-DAYS-EXPIRE.
+      * MEM-481325 END
+           PERFORM 8300-GET-NAME-ADDR.
+           PERFORM 8400-GET-AMOUNT-DUE.
+
+      *DIVERTING LETTER
+           IF  SKIP-RECORD-NO
+               IF  WS-BILL-PLAN NOT = 'AC'
+                   PERFORM 2100-WRITE-SYNC-FILE
+               ELSE
+                   PERFORM 8500-CHECK-BILLPLN-NXTEVT
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+                   PERFORM 8600-GET-LODGE-TYPE
+                   EVALUATE TRUE
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+                   WHEN WS-BILPLN-NXTEVT = 'AC'                   AND
+      *CS0307-CHECK FOR OUT OF TERRITORY MEMBERS
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+      *                (DN-CLO-LODGE-C(3:2) NOT = '94' AND
+      *                 DN-CLO-LODGE-C(3:2) NOT = '96' AND
+      *                 DN-CLO-LODGE-C(3:2) NOT = '99')
+                        NOT  OUTOF-TERRITORY
+                        PERFORM 2200-WRITE-CAU-LTR-N-UPDATE
+      *CS0307-CHECK FOR OUT OF TERRITORY MEMBERS
+                   WHEN WS-BILPLN-NXTEVT = 'AC'                   AND
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+                        OUTOF-TERRITORY
+      *                (DN-CLO-LODGE-C(3:2)  = '94' OR
+      *                 DN-CLO-LODGE-C(3:2)  = '96' OR
+      *                 DN-CLO-LODGE-C(3:2)  = '99')
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+                        PERFORM 2300-WRITE-TERR-FILE
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+                   WHEN SKIP-RECORD-NO
+                        PERFORM 2100-WRITE-SYNC-FILE
+                   END-EVALUATE
+               END-IF
+           END-IF.
+      *CS0307-CHECK FOR OUT OF TERRITORY MEMBERS
+
+      *************************************************************
+      * WRITE FILE OF MEMBERS IN CAU FILE THAT ARE NOT ON AC      *
+      * BILLPLAN                                                  *
+      *************************************************************
+       2100-WRITE-SYNC-FILE.
+
+           MOVE E270-CLUB-CODE                 TO MD058-CLUB-C.
+           MOVE E270-PRODUCT-ID(2:8)           TO MD058-MBR-N.
+           MOVE MC502-O-NAME                   TO MD058-NAME.
+           MOVE WS-BILL-PLAN                   TO MD058-BILL-PLAN.
+           MOVE WS-NAME-ABBREV                 TO MD058-STATE-C.
+           MOVE MC502-O-MAIL-STATE             TO MD058-STATE.
+           MOVE MC502-O-MAIL-ZIP               TO MD058-ZIP.
+           MOVE E270-OLD-LST4-DIGIT-CC         TO MD058-CC-NBR.
+           MOVE M250-STREET                    TO MD058-ADDR.
+           MOVE MC502-O-MAIL-PREST-CITY        TO MD058-CITY.
+           MOVE CUR-TERM-EXP-D                 TO EXP-D OF WS-OUTREC.
+           MOVE CUR-TERM-EXP-D (9:2)           TO EXP-YY OF WS-OUTREC.
+
+           MOVE LENGTH OF WS-OUTREC            TO INPUT-DATA-LEN.
+           MOVE WS-OUTREC                      TO INPUT-DATA-TEXT.
+           MOVE 'MD58SYNC'                     TO JOB-M.
+
+           PERFORM 6900-INSERT-WRKTBL.
+           MOVE SPACES                         TO WS-OUTREC.
+
+      /----------------------------------------------------------------
+      *SR1015249 - 12/16/14 MOVED TO PARAGRAPH FROM MAIN PARAGRAPH
+      *----------------------------------------------------------------
+       2200-WRITE-CAU-LTR-N-UPDATE.
+
+      * MEM-480905 START "DO NOT UPDATE HOUSEHOLD BILLPLAN TO AM"
+      *    PERFORM 2210-CHANGE-HOUSEHOLD-AM.
+      * MEM-480905 END
+
+           IF  MD607-PROCESS-OLD
+               PERFORM 6100-WRITE-EMS-WORK-CAU
+           ELSE
+      * MEM-481325 START
+             IF DO-PRINT
+               PERFORM 6200-WRITE-EMS-WORK-LETTER
+             END-IF
+      * MEM-481325 END
+           END-IF.
+
+      * MEM-480905 START "DO NOT UPDATE NEXT EVENT BILLPLAN TO AM"
+      *    PERFORM 2220-UPDATE-NEXT-EVENT
+      *    PERFORM 2230-WRITE-MEMBER-SUMMARY.
+      * MEM-480905 END
+
+      /----------------------------------------------------------------
+      *  IF HOUSEHOLD HAS AN AC BILLPLAN AND IS IN EFT FILE CHANGE
+      *  BILLPLAN BACK TO AM
+      *----------------------------------------------------------------
+       2210-CHANGE-HOUSEHOLD-AM.
+
+           MOVE '2210-CHANGE-HOUSEHOLD-AM'   TO MD900-PARAGRAPH-NAME
+
+           INITIALIZE                           MD380C-RECORD
+
+           MOVE E270-CLUB-CODE               TO MD380-CLUB-C
+           MOVE E270-PRODUCT-ID              TO MD380-MEMBER-NUMBER
+           MOVE 'AM'                         TO MD380-BILL-PLAN-TYP-C
+
+           SET CHG-BILL-PLAN-TYP-C           TO TRUE
+
+           MOVE 'MD058CB'                    TO MD380-DA-PROG-M
+
+           SET MD380-UPDATE-REQUESTED        TO TRUE
+
+           CALL WS-MD380MA                USING MD380C-RECORD
+
+           IF  MD380-NO-ERRORS
+               ADD 1                         TO WS-TOT-BILLPLAN-CHG
+           ELSE
+               MOVE E270-CLUB-CODE           TO MD900-KEY-DATA-LN (1)
+               MOVE E270-PRODUCT-ID          TO MD900-KEY-DATA-LN (2)
+               MOVE MD380-ERROR-PROBLEM-NAME TO MD900-ERROR-MSG-1
+               MOVE WS-MD380MA               TO MD900-PGM-NAME
+               MOVE 'MBRSHP-HOUSEHOLD'       TO MD900-TABLE-CURSOR-NAME
+               SET MD900-DB2-FUNCTION-UPDATE TO TRUE
+
+               IF  MD380-SQL-ERROR
+                   MOVE MD380-ERROR-SQLCODE  TO SQLCODE
+                   PERFORM 8990-MAIN-PGM-SQL-ERROR
+               ELSE
+                   MOVE MD380-RETURN-CODE    TO MD900-RETURN-CODE
+                   PERFORM 9000-ERROR-HANDLING
+               END-IF
+           END-IF.
+
+      *SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+      *----------------------------------------------------------------
+      *  IF HOUSEHOLD HAS AN AC BILLPLAN AND IS IN EFT FILE CHANGE
+      *  BILLPLAN BACK TO AM
+      *----------------------------------------------------------------
+       2220-UPDATE-NEXT-EVENT.
+
+           MOVE '2220-UPDATE-NEXT-EVENT'
+                                              TO MD900-PARAGRAPH-NAME
+
+           MOVE E270-CLUB-CODE                TO MD614-CLUB-C
+           MOVE E270-PRODUCT-ID               TO MD614-MBRSHP-N
+           MOVE 'AM'                          TO MD614-BILL-PLAN
+           MOVE WS-ISO-DATE                   TO MD614-BILL-PROCESSING-D
+           SET MD614-BATCH                    TO TRUE
+           SET MD614-BILL-OFFSET-DAYS-UNKNOWN TO TRUE
+           SET MD614-BILL-CYCLE-DECISION      TO TRUE
+           SET MD614-BILL-EVENT-BILL-PLAN-CHG TO TRUE
+           SET MD614-ACTION-SCHD-EVENT        TO TRUE
+           IF WS-AMOUNT-DUE         > 0
+              SET MD614-OD-OTSTNDG-DUES       TO TRUE
+           ELSE
+
+              SET MD614-OD-NO-OTSTNDG-DUES    TO TRUE
+           END-IF.
+
+           CALL WS-MD614BR              USING MD614-LINK-DATA
+                                              MD900-ERROR-DATA
+
+           IF MD900-RC-OK
+              CONTINUE
+           ELSE
+               MOVE E270-CLUB-CODE            TO MD900-KEY-DATA-LN (1)
+               MOVE E270-PRODUCT-ID           TO MD900-KEY-DATA-LN (2)
+               MOVE WS-MD614BR                TO MD900-PGM-NAME
+               MOVE 'MBRSHP-NEXT-EVENT'       TO MD900-TABLE-CURSOR-NAME
+               SET MD900-DB2-FUNCTION-UPDATE  TO TRUE
+               PERFORM 9000-ERROR-HANDLING
+           END-IF.
+
+      /----------------------------------------------------------------
+      *  WRITE MEMBER SUMMARY ROW FOR BILLPLAN CHANGE FROM AC TO AM
+      *
+      *----------------------------------------------------------------
+       2230-WRITE-MEMBER-SUMMARY.
+
+           MOVE '2230-WRITE-MEMBER-SUMMARY  '  TO MD900-PARAGRAPH-NAME
+
+           INITIALIZE                             MD630C-RECORD
+
+           MOVE E270-CLUB-CODE                 TO MD630I-CLUB-CODE
+           MOVE E270-PRODUCT-ID                TO MD630I-MEMBER-NUMBER
+           MOVE 'AM'                           TO MD630I-BILL-PLAN-NEW
+           MOVE WS-BILL-PLAN
+                                               TO MD630I-BILL-PLAN-OLD
+
+           MOVE '99'                           TO MD630I-SOURCE-C-NEW
+
+           MOVE '061'                          TO MD630I-REASON-C
+           MOVE E270-CLUB-CODE                 TO MD630I-DA-CLUB-N
+           MOVE '999999'                       TO MD630I-DA-EMP-ID-N
+           MOVE 0                              TO MD630I-DA-DIST-OFF-N
+           MOVE '000000'                       TO MD630I-DA-EMP-SECT-N
+           PERFORM 6150-GET-TIMESTAMP
+           MOVE WS-CURRENT-TIMESTAMP           TO MD630I-CREATE-TMSTAMP
+           MOVE 'MD058CB'                      TO MD630I-PROGRAM-ID
+
+           SET SUMMARY-DETAIL                  TO TRUE
+
+           MOVE 'BATCH'                        TO MD630I-REQ-BY
+
+           CALL WS-MD630BR               USING MD630C-RECORD
+                                               MD960-LINK-DATA
+                                               MD900-ERROR-DATA
+
+           IF MD900-RC-OK
+              CONTINUE
+           ELSE
+               MOVE E270-CLUB-CODE            TO MD900-KEY-DATA-LN (1)
+               MOVE E270-PRODUCT-ID           TO MD900-KEY-DATA-LN (2)
+               MOVE WS-MD630BR                TO MD900-PGM-NAME
+               MOVE 'MBRSHP-SUMMARY'          TO MD900-TABLE-CURSOR-NAME
+               PERFORM 9000-ERROR-HANDLING
+           END-IF.
+
+      *CS0307-CHANGE FOR OUT OF TERRITORY MEMBERS ON AC BILLPLAN
+      *************************************************************
+      * WRITE TO EMS_WORK_CAU TABLE TO CREATE FILE OF OUT OF TERR *
+      * MEMBERS THAT ARE ON AC BILLPLAN                           *
+      *************************************************************
+       2300-WRITE-TERR-FILE.
+              MOVE E270-CLUB-CODE      TO MD058-CLUB-C
+              MOVE E270-PRODUCT-ID(2:8)
+                                        TO MD058-MBR-N
+              MOVE MC502-O-NAME         TO MD058-NAME
+              MOVE WS-BILL-PLAN         TO MD058-BILL-PLAN
+              MOVE WS-NAME-ABBREV       TO MD058-STATE-C
+              MOVE MC502-O-MAIL-STATE   TO MD058-STATE
+              MOVE MC502-O-MAIL-ZIP     TO MD058-ZIP
+              MOVE E270-OLD-LST4-DIGIT-CC
+                                        TO MD058-CC-NBR
+              MOVE M250-STREET          TO MD058-ADDR
+              MOVE MC502-O-MAIL-PREST-CITY
+                                        TO MD058-CITY
+              MOVE CUR-TERM-EXP-D OF MBRSHP-HOUSEHOLD
+                                        TO EXP-D OF WS-OUTREC
+              MOVE CUR-TERM-EXP-D OF MBRSHP-HOUSEHOLD(9:2)
+                                        TO EXP-YY OF WS-OUTREC
+
+              MOVE LENGTH OF WS-OUTREC TO INPUT-DATA-LEN.
+              MOVE WS-OUTREC           TO INPUT-DATA-TEXT.
+              MOVE 'MD58TERR' TO JOB-M.
+
+              PERFORM 6900-INSERT-WRKTBL.
+              MOVE SPACES TO WS-OUTREC
+                   .
+      *CS0307-CHANGE FOR OUT OF TERRITORY MEMBERS ON AC BILLPLAN
+
+
+       2050-EOF-ROUTINE.
+
+      * MEM-480905 START
+           CLOSE CAUCCREJ-FILE
+                 MD058CB-OUTPUT-SMS
+                 MD058CB-OUTPUT-PUSH
+                 MD058CB-OUTPUT-EMAIL
+      * MEM-480905 END
+           PERFORM 9902-RESTART-END
+
+           DISPLAY MD901-SEP.
+           DISPLAY '   PROGRAM NAME: ' WS-PGM-NAME.
+           DISPLAY 'PROCESSING DATE: ' WS-RUN-DATE
+                   ' RUN DATE: ' WS-RUN-DATE.
+           DISPLAY MD901-SEP.
+           DISPLAY '    TOTAL INPUT: ' WS-INPUT-CNT.
+           DISPLAY '    TOTAL OUT OF SYNC: ' WS-OUT-OF-SYNC-CNT.
+           DISPLAY '    TOTAL OUT OF TERR: ' WS-OUT-OF-TERR-CNT.
+           DISPLAY 'TOTAL CHANGE BILLPLAN: ' WS-TOT-BILLPLAN-CHG.
+           DISPLAY '        TOTAL SKIPPED: ' WS-SKIPPED-COUNT.
+           DISPLAY '    TOTAL OUTPUT M250: ' WS-OUT-COUNT.
+           DISPLAY '  TOTAL OUTPUT WK-LTR: ' WS-OUT-LETTER-COUNT.
+           DISPLAY    '  TOTAL LETTER 168: ' WS-OUT-LTR-168-CNT.
+      * MEM-480905 START
+           DISPLAY    '                    '.
+           DISPLAY    '  TOTAL PUSH  COUNT ' WS-OUTPUT-CELL-COUNT.
+           DISPLAY    '  TOTAL SMS   COUNT ' WS-OUTPUT-SMS-COUNT.
+           DISPLAY    '  TOTAL EMAIL COUNT ' WS-OUTPUT-EMAIL-COUNT.
+      * MEM-480905 END
+           DISPLAY MD901-SEP.
+
+      /************************************************************
+       2500-PROCESS-FILE.
+      *************************************************************
+
+           INITIALIZE                MD60B-INPUT-OUTPUT.
+
+           MOVE WS-CLUB-C            TO MD60B-I-CLUB-C                  GE170301
+           MOVE WS-MBRSHP-N          TO MD60B-I-MBRSHP-N                GE170301
+           MOVE '00'                 TO MD60B-I-ROLE-C                  GE170301
+           MOVE WS-LETTER-168-C      TO MD60B-I-LETTER-C                GE170301
+           MOVE MD930-ISO-DT         TO MD60B-I-REQUEST-DATE
+           MOVE WS-PGM-NAME          TO MD60B-I-PROGRAM-NAME            GE170301
+                                                                        GE170301
+           CALL WS-MD60BBR        USING MD60B-INPUT-OUTPUT              GE170301
+                                        MD900-ERROR-DATA.               GE170301
+
+           IF  MD900-RC-OK
+               ADD 1                TO WS-OUT-LTR-168-CNT
+           ELSE
+               MOVE WS-MD60BBR                  TO MD900-PGM-NAME
+               DISPLAY '*********************************************'
+               DISPLAY '**** ERROR CALLING MD60BBR               ****'
+               DISPLAY '**** CLUB   = ', WS-CLUB-C
+               DISPLAY '**** MBRSHP = ', WS-MBRSHP-N
+               DISPLAY '*********************************************'
+               IF  MD900-ERROR-MSG-1 = SPACES
+                   MOVE 'PROBLEM CALLING MD60BBR'
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+               IF  MD900-PARAGRAPH-NAME = SPACES
+                   MOVE '2500-PROCESS-FILE'
+                                               TO MD900-PARAGRAPH-NAME
+               END-IF
+               PERFORM 9999-ABEND
+           END-IF.
+      /
+      /**************************************************************
+      *6000-READ-INPUT:                                             *
+      ***************************************************************
+       6000-READ-INPUT.
+
+           READ CAUCCREJ-FILE        INTO WS-MRDCCREJ-REC
+           AT END
+              SET WS-EOF-INPUT        TO TRUE
+           NOT AT END
+               ADD +1                         TO WS-INPUT-CNT
+               MOVE E270-PRODUCT-PREFIX       TO WS-CLUB-C
+               MOVE E270-PRODUCT-ID           TO WS-MBRSHP-N
+      * MEM-480905 START
+               SET NO-GET-NAME         TO TRUE
+               MOVE ZEROES             TO WS-HOLD-CELL-NUMBER
+               MOVE SPACES             TO WS-HOLD-EMAIL-ADDR
+      * MEM-480905 END
+           END-READ
+                .
+      ***************************************************************
+      * 6100 PREPS FOR INSERT OF ERROR RECORD TO WORK TABLE         *
+      ***************************************************************
+       6100-WRITE-EMS-WORK-CAU.
+
+           MOVE E270-CLUB-CODE     TO M250-CLUB-CODE
+           MOVE E270-PRODUCT-ID    TO M250-MBR-NUM
+                                      M250-PAYOR-ACCOUNT-ID
+
+           MOVE LENGTH OF WS-OUTEIP TO INPUT-DATA-LEN.
+           MOVE WS-OUTEIP           TO INPUT-DATA-TEXT.
+           MOVE 'MRD4508P'          TO JOB-M.
+
+           PERFORM 6900-INSERT-WRKTBL.
+      *----------------------------------------------------------------
+      *  GET CURRENT TIMESTAMP
+      *
+      *----------------------------------------------------------------
+       6150-GET-TIMESTAMP.
+
+           EXEC SQL
+                SET :WS-CURRENT-TIMESTAMP  =  CURRENT TIMESTAMP
+           END-EXEC
+
+           IF  SQLCODE = MD903-SQL-OK
+               CONTINUE
+
+           ELSE
+               PERFORM 8990-MAIN-PGM-SQL-ERROR
+           END-IF.
+
+      /**************************************************************
+      * SR1015249 12/15/14 ADDED PARAGRAPH TO DIVERT LETTERS TO     *
+      * NEW EIP PROCESSING.                                         *
+      ***************************************************************
+       6200-WRITE-EMS-WORK-LETTER.
+      /*****************************************************************
+
+           PERFORM 6210-MOVE-WORK-LETTER-DATA.
+
+           EXEC SQL
+                INSERT INTO EMS_WORK_LETTER
+                 ( FK_MHH_ACL_CLUB_C
+                 , FK_MHH_MBRSHP_N
+                 , EIP_LETTER_C
+                 , FK_MBR_BILL_PLAN
+                 , FK_MBR_BILL_EVENT
+                 , FK_MBR_BILL_CYCLE
+                 , PROC_C
+                 , BILL_REG_N
+                 , BILL_SEGMENT_N
+                 , BILL_SEGMENT_I
+                 , CYCLE_START_D
+                 , CYC_START_OFFSET_DYS
+                 , MBR_CNCL_OFFSET_DYS
+                 , PRINT_CARDS_I
+                 , NXT_EVT_LOOKBACK_I
+                 , FK_CMC_MRD_X
+                 , CREATED_PROG_M
+                 , CREATED_S
+                 , BILL_CORR_TYPE_C
+                 , OUT_OF_TERTRY_CLUB_CODE
+                 , CRD_ISS_RSN
+                 , LTR_ROLE
+                 , SPINOF_ROLES)
+                VALUES
+                 (:EMS-WORK-LETTER.FK-MHH-ACL-CLUB-C
+                 ,:EMS-WORK-LETTER.FK-MHH-MBRSHP-N
+                 ,:EIP-LETTER-C
+                 ,:FK-MBR-BILL-PLAN
+                 ,:FK-MBR-BILL-EVENT
+                 ,:FK-MBR-BILL-CYCLE
+                 ,:PROC-C
+                 ,:BILL-REG-N
+                 ,:BILL-SEGMENT-N
+                 ,:BILL-SEGMENT-I
+                 ,:CYCLE-START-D
+                 ,:CYC-START-OFFSET-DYS
+                 ,:MBR-CNCL-OFFSET-DYS
+                 ,:PRINT-CARDS-I
+                 ,:NXT-EVT-LOOKBACK-I
+                 ,:FK-CMC-MRD-X
+                 ,:WS-PGM-NAME
+                 , CURRENT TIMESTAMP
+                 ,:BILL-CORR-TYPE-C
+                 ,:OUT-OF-TERTRY-CLUB-CODE
+                 ,:CRD-ISS-RSN
+                 ,:LTR-ROLE
+                 ,:SPINOF-ROLES)
+           END-EXEC.
+
+           EVALUATE SQLCODE
+           WHEN MD903-SQL-OK
+                ADD +1                        TO WS-OUT-LETTER-COUNT
+           WHEN OTHER
+                MOVE 'D000-ADD-TO-WORK-LETTER'
+                                              TO MD900-PARAGRAPH-NAME
+                SET MD900-DB2-FUNCTION-INSERT TO TRUE
+                MOVE 'INSERT ERROR TO EMSWKLTR'
+                                              TO MD900-ERROR-MSG-1
+                MOVE E270-CLUB-CODE           TO MD900-KEY-DATA-LN(1)
+                MOVE E270-PRODUCT-ID          TO MD900-KEY-DATA-LN(2)
+                MOVE WS-PGM-NAME              TO MD900-PGM-NAME
+                MOVE 'EMS-WORK-LETTER'        TO MD900-TABLE-CURSOR-NAME
+                PERFORM 8990-MAIN-PGM-SQL-ERROR
+           END-EVALUATE.
+
+      ******************************************************************
+       6210-MOVE-WORK-LETTER-DATA.
+
+           INITIALIZE                             EMS-WORK-LETTER.
+
+           MOVE E270-CLUB-CODE              TO FK-MHH-ACL-CLUB-C
+                                                OF EMS-WORK-LETTER.
+           MOVE E270-PRODUCT-ID             TO FK-MHH-MBRSHP-N
+                                                OF EMS-WORK-LETTER.
+           MOVE WS-CAU-LETTER               TO EIP-LETTER-C
+                                                OF EMS-WORK-LETTER.
+           MOVE MD380-BILL-PLAN-TYP-C       TO FK-MBR-BILL-PLAN.
+           MOVE SPACES                      TO FK-MBR-BILL-EVENT.
+
+      * ALL OF THESE LETTERS ARE CORRESPONDENCE LETTERS. THERE IS NO
+      * BILL CYCLE ASSOCIATED WITH THEM. MOVE 'LT' (LETTER)  FOR
+      * CORRESPONDENCE TYPE.
+
+           MOVE 'LT'                        TO FK-MBR-BILL-CYCLE
+                                                OF EMS-WORK-LETTER.
+           MOVE WS-ISO-DATE                 TO CYCLE-START-D.
+           MOVE DN-REN-REG-N                TO BILL-REG-N.
+           MOVE DN-REN-BILL-SEGMENT-N       TO BILL-SEGMENT-N.
+           MOVE DN-REN-BILL-SEGMENT-I       TO BILL-SEGMENT-I.
+           MOVE MD607-CYC-START-OFFSET-DY   TO CYC-START-OFFSET-DYS.
+           MOVE MD607-MBR-CANCL-OFFSET-DY   TO MBR-CNCL-OFFSET-DYS.
+           MOVE MD607-PRINT-CARDS-I         TO PRINT-CARDS-I.
+           MOVE MD607-NXT-EVT-LOOKBACK-I    TO NXT-EVT-LOOKBACK-I.
+           MOVE MD607-MRD-TEXT              TO FK-CMC-MRD-X.
+           MOVE MD607-BILL-CORR-TYPE-C      TO BILL-CORR-TYPE-C.
+      *INT-14-02
+           MOVE SPACES                      TO OUT-OF-TERTRY-CLUB-CODE
+                                               CRD-ISS-RSN
+                                               LTR-ROLE
+                                               SPINOF-ROLES
+                .
+      *INT-14-02
+      *SR1014222 - END CHANGES
+      ***************************************************************
+      * 6900 INSERTS TO EMS WORK CAU TBL. TABLE WILL NEED TO BE     *
+      *      UNLOADED INTO A FILES FOR PROCESSING BY EIP.           *
+      *                                                             *
+      ***************************************************************
+       6900-INSERT-WRKTBL.
+
+           EXEC SQL
+              INSERT INTO EMS_WORK_CAU
+                ( JOB_M
+                , CREATE_S
+                , INPUT_DATA
+                )
+              VALUES
+                ( :JOB-M
+                , CURRENT TIMESTAMP
+                , :INPUT-DATA
+                )
+           END-EXEC.
+
+           EVALUATE SQLCODE
+           WHEN MD903-SQL-OK
+                EVALUATE TRUE
+                WHEN JOB-M = 'MRD4508P'
+                     ADD +1                   TO WS-OUT-COUNT
+                WHEN JOB-M = 'MD58SYNC'
+                     ADD 1                    TO WS-OUT-OF-SYNC-CNT
+      *CS0307 CHANGE FOR OUT OF TERRITORY MEMBERSHIPS ON AC BILLPLAN
+                WHEN JOB-M = 'MD58TERR'
+                      ADD 1                   TO WS-OUT-OF-TERR-CNT
+                END-EVALUATE
+      *CS0307 CHANGE FOR OUT OF TERRITORY MEMBERSHIPS ON AC BILLPLAN
+           WHEN OTHER
+                SET MD900-DB2-FUNCTION-INSERT TO TRUE
+                MOVE 'EMS_WORK_CAU'           TO MD900-TABLE-CURSOR-NAME
+                MOVE '6900-INSERT-WRKTBL'     TO MD900-PARAGRAPH-NAME
+                MOVE E270-CLUB-CODE           TO MD900-KEY-DATA-LN(1)
+                MOVE E270-PRODUCT-ID          TO MD900-KEY-DATA-LN(2)
+                PERFORM 8990-MAIN-PGM-SQL-ERROR
+           END-EVALUATE.
+
+      * MEM-480905 START
+      *****************************************************************
+      *    WRITE OUTPUT CELL FILE
+      *****************************************************************
+       7000-WRITE-OUTPUT-CELL-FILE.
+
+           WRITE MD058CB-OUTPUT-PUSH-REC
+                                     FROM WS-PUSH-DETAIL-RECORD.
+           ADD +1                      TO WS-OUTPUT-CELL-COUNT.
+
+      *****************************************************************
+      *    WRITE OUTPUT SMS FILE
+      *****************************************************************
+       7100-WRITE-OUTPUT-SMS-FILE.
+
+           WRITE MD058CB-OUTPUT-SMS-REC
+                                     FROM WS-SMS-DETAIL-RECORD.
+           ADD +1                      TO WS-OUTPUT-SMS-COUNT.
+
+      *****************************************************************
+      *    WRITE OUTPUT EMAIL FILE
+      *****************************************************************
+       7200-WRITE-OUTPUT-EMAIL-FILE.
+
+           WRITE MD058CB-OUTPUT-EMAIL-REC
+                                     FROM WS-EMAIL-DETAIL-RECORD.
+           ADD +1                      TO WS-OUTPUT-EMAIL-COUNT.
+
+      *****************************************************************
+      *    WRITE OUTPUT CELL FILE HEADER
+      *****************************************************************
+       7300-WRITE-OUTPUT-CELL-HDR.
+
+           WRITE MD058CB-OUTPUT-PUSH-REC
+                                     FROM WS-PUSH-HEADER-RECORD.
+           ADD +1                      TO WS-OUTPUT-CELL-COUNT.
+
+      *****************************************************************
+      *    WRITE OUTPUT SMS FILE HEADER
+      *****************************************************************
+       7400-WRITE-OUTPUT-SMS-HDR.
+
+           WRITE MD058CB-OUTPUT-SMS-REC
+                                     FROM WS-SMS-HEADER-RECORD.
+           ADD +1                      TO WS-OUTPUT-SMS-COUNT.
+
+      *****************************************************************
+      *    WRITE OUTPUT EMAIL FILE HEADER
+      *****************************************************************
+       7500-WRITE-OUTPUT-EMAIL-HDR.
+
+           WRITE MD058CB-OUTPUT-EMAIL-REC
+                                     FROM WS-EMAIL-HEADER-RECORD.
+           ADD +1                      TO WS-OUTPUT-EMAIL-COUNT.
+
+      * MEM-480905 END
+
+      /----------------------------------------------------------------*
+      *---  RETRIEVE CLUB NAME ABBREVIATED                          ---*
+      *----------------------------------------------------------------*
+       8000-GET-CLUB-NAME-ABBREV.
+
+           MOVE WS-PROCESSING-D          TO MD04-PROCESSING-DATE
+           MOVE E270-CLUB-CODE           TO MD04-CLUB-CODE
+
+           CALL WS-MD699BR            USING MD04-INPUT-OUTPUT-RECORD
+                                            MD900-ERROR-DATA
+           IF  MD900-RC-OK
+               MOVE MD04-CLUB-ABBREV    TO WS-NAME-ABBREV
+           ELSE
+               DISPLAY 'MD058CB ERROR IN 8000-GET-CLUB-NAME-ABBREV'
+               DISPLAY 'MD04-PROCESSING-DATE ' MD04-PROCESSING-DATE
+               DISPLAY 'MD04-CLUB-CODE ' MD04-CLUB-CODE
+               PERFORM 9000-ERROR-HANDLING
+           END-IF.
+
+      *-----------------------------------------------------------------
+      *SR1015249 - CALL MD607CR TO FIND OUT WHICH PATH THE LETTER WILL
+      * BE PROCESSED IN.
+      *-----------------------------------------------------------------
+       8100-DETERMINE-LETTER-PATH.
+
+           INITIALIZE                             MD607-INPUT-OUTPUT
+                                                  MD900-ERROR-DATA.
+           MOVE E270-CLUB-CODE                 TO MD607-CLUB-C.
+           MOVE WS-CAU-LETTER                  TO MD607-LETTER-C.
+           MOVE WS-ISO-DATE                    TO MD607-EFF-D.
+
+           CALL WS-MD607BR                  USING MD607-INPUT-OUTPUT
+                                                  MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               CONTINUE
+           ELSE
+               DISPLAY '********************************************'
+               DISPLAY '***MD058CB - 8100-DETERMINE-LETTER-PATH     '
+               DISPLAY '***CLUB/LETTER USED ' E270-CLUB-CODE '/'
+                              WS-CAU-LETTER
+               DISPLAY '********************************************'
+               IF  MD900-ERROR-MSG-1 > SPACES
+                   CONTINUE
+               ELSE
+                   MOVE 'ERROR WITH MD607BR CALL'
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+               IF  MD900-PGM-NAME > SPACES
+                   CONTINUE
+               ELSE
+                   MOVE WS-MD607BR             TO MD900-PGM-NAME
+               END-IF
+               IF  MD900-PARAGRAPH-NAME > SPACES
+                   CONTINUE
+               ELSE
+                   MOVE '8100-DETERMINE-LETTER-PATH'
+                                              TO MD900-PARAGRAPH-NAME
+               END-IF
+               PERFORM 9999-ABEND
+           END-IF.
+
+      *-----------------------------------------------------------------
+      *  GET HOUSEHOLD BILLPLAN, IF BILLPLAN NOT = 'AC' DO NOT CHANGE
+      *  BILLPLAN TO AM AND WRITE TO FILE.
+      *-----------------------------------------------------------------
+       8200-CHECK-BILLPLAN-AC.
+
+           SET  MD900-DB2-FUNCTION-SELECT TO TRUE
+           MOVE '8200-CHECK-BILLPLAN-AC'  TO MD900-PARAGRAPH-NAME
+           MOVE 'MBRSHP_HOUSEHOLD'        TO MD900-TABLE-CURSOR-NAME
+           MOVE  SPACES                   TO MD900-KEY-DATA
+           MOVE  E270-CLUB-CODE           TO MD900-KEY-DATA-LN(1)
+           MOVE  E270-PRODUCT-ID          TO MD900-KEY-DATA-LN(2)
+
+      *SR1015249 12-15-14 ADDED FIELDS FOR WORK_LETTER
+           EXEC SQL
+             SELECT FK_BILL_PLAN_TYP_C
+                   ,CUR_TERM_EXP_D
+                   ,EFF_D
+                   ,SPEC_HANDLING_C
+                   ,DN_CLO_LODGE_C
+                   ,DN_REN_REG_N
+                   ,DN_REN_BILL_SEGMENT_N
+                   ,DN_REN_BILL_SEGMENT_I
+               INTO :WS-BILL-PLAN
+                   ,:MBRSHP-HOUSEHOLD.CUR-TERM-EXP-D
+                   ,:MBRSHP-HOUSEHOLD.EFF-D
+                   ,:SPEC-HANDLING-C
+                   ,:DN-CLO-LODGE-C
+                   ,:DN-REN-REG-N
+                   ,:DN-REN-BILL-SEGMENT-N
+                   ,:DN-REN-BILL-SEGMENT-I
+               FROM MBRSHP_HOUSEHOLD
+              WHERE FK_ACL_CLUB_C      = :E270-CLUB-CODE
+                AND MBRSHP_N           = :E270-PRODUCT-ID
+                AND EFF_D             <= :WS-RUN-DATE
+                AND CUR_TERM_EXP_D     > :WS-RUN-DATE
+           END-EXEC
+
+           IF  SQLCODE = MD903-SQL-OK
+               CONTINUE
+           ELSE
+               DISPLAY 'PROBLEM WITH RECORD '
+               DISPLAY 'CLUB' E270-CLUB-CODE
+               DISPLAY 'MEMBER NO' E270-PRODUCT-ID
+               DISPLAY 'SQLCODE' SQLCODE
+               ADD 1                         TO WS-SKIPPED-COUNT
+               SET SKIP-RECORD-YES           TO TRUE
+           END-IF.
+      * MEM-481325 START
+      *-----------------------------------------------------------*
+       8250-CHECK-NBR-DAYS-EXPIRE.
+      *-----------------------------------------------------------*
+
+
+           MOVE SPACE TO UTL020-DATE-AREAS.
+           MOVE CUR-TERM-EXP-D OF MBRSHP-HOUSEHOLD
+                                     TO WS-DATE-10.
+
+           MOVE WS-DATE-10-CC        TO UTL020-1ST-CCYYMMDD-CC.
+           MOVE WS-DATE-10-YY        TO UTL020-1ST-CCYYMMDD-YY.
+           MOVE WS-DATE-10-MM        TO UTL020-1ST-CCYYMMDD-MM.
+           MOVE WS-DATE-10-DD        TO UTL020-1ST-CCYYMMDD-DD.
+
+           MOVE WS-PROCESSING-D      TO WS-DATE-10.
+
+           MOVE WS-DATE-10-CC        TO UTL020-2ND-CCYYMMDD-CC.
+           MOVE WS-DATE-10-YY        TO UTL020-2ND-CCYYMMDD-YY.
+           MOVE WS-DATE-10-MM        TO UTL020-2ND-CCYYMMDD-MM.
+           MOVE WS-DATE-10-DD        TO UTL020-2ND-CCYYMMDD-DD.
+
+           CALL WS-UT020DT      USING  UTL020-DATE-AREAS.
+
+           IF  UTL020-RETURN-CODE = ZEROES
+           AND UTL020-OFFSET-NO-OF-DAYS-9 <= 23
+               SET DO-NOT-PRINT          TO TRUE
+           ELSE
+               SET DO-PRINT              TO TRUE
+           END-IF.
+
+      * MEM-481325 END
+      *-----------------------------------------------------------*
+       8300-GET-NAME-ADDR.
+      *-----------------------------------------------------------*
+           INITIALIZE                       MC502-INPUT-OUTPUT.
+
+      * MEM-480905 START
+           SET GET-NAME                  TO TRUE.
+           MOVE 'Y'                      TO MC502-I-REQ-ACT-CUST-INFO.
+      * MEM-480905 END
+           MOVE 'Y'                      TO MC502-I-REQ-MAIL-ADDR.
+           MOVE 'EMS'                    TO MC502-I-CALLING-PROGRAM.
+           MOVE WS-PROCESS-DATE          TO MC502-I-PROC-DATE.
+           MOVE '01'                     TO MC502-I-LOB-CODE.
+           MOVE E270-CLUB-CODE           TO MC502-I-CLUB-CODE.
+           MOVE E270-PRODUCT-ID          TO MC502-I-PRODUCT-NUMBER.
+
+           CALL MC502BCD              USING MC502-INPUT-OUTPUT.
+
+           EVALUATE MC502-O-RETURN-CODE
+           WHEN 0
+                PERFORM 8210-FILL-N-A-INFO
+                PERFORM 8220-GET-COMPANY-DATA
+           WHEN OTHER
+                DISPLAY 'MC502 RETURN CODE: ' MC502-O-RETURN-CODE
+                DISPLAY ' MC502 RETURN MSG: ' MC502-O-RETURN-MESSAGE
+                DISPLAY '          SQLCODE: ' MC502-O-SQL-CODE
+                MOVE MC502-O-SQL-CODE          TO MD900-SQLCODE
+                IF  MD900-SQLCODE NOT = 0
+                    SET MD900-RC-DB2-SQL-ERROR TO TRUE
+                END-IF
+                MOVE MC502-O-RETURN-MESSAGE    TO MD900-PARAGRAPH-NAME
+                                                  MD900-ERROR-MSG-1
+                MOVE E270-CLUB-CODE            TO MD900-KEY-DATA-LN(1)
+                MOVE E270-PRODUCT-ID           TO MD900-KEY-DATA-LN(2)
+                MOVE M250-LETTER-TYPE          TO MD900-KEY-DATA-LN(3)
+                MOVE MC502-O-RETURN-CODE       TO MD900-KEY-DATA-LN(4)
+                MOVE MC502BCD                  TO MD900-PGM-NAME
+                PERFORM 9025-DISPLAY-MACS-ERROR-MSG
+                PERFORM 9000-ERROR-HANDLING
+           END-EVALUATE.
+
+      *************************************************************
+      * MOVE EXTRACTED FIRST-NAME, LAST-NAME AND CUST-ID          *
+      *                                                           *
+      *************************************************************
+      *-----------------------------------------------------------*
+       8210-FILL-N-A-INFO.
+      *-----------------------------------------------------------*
+
+           INITIALIZE WS-OUTEIP
+           EVALUATE TRUE
+           WHEN MC502-O-MAIL-PRE-ADDR(1:4) = 'ATTN'
+                MOVE MC502-O-MAIL-PRE-ADDR     TO M250-C-O-ADDRESS
+           WHEN MC502-O-MAIL-PRE-ADDR(1:3) = 'C/O'
+                STRING 'ATTN ',
+                        MC502-O-MAIL-PRE-ADDR(5:35)
+                        DELIMITED BY SIZE    INTO M250-C-O-ADDRESS
+           WHEN MC502-O-MAIL-PRE-ADDR > SPACES
+                STRING 'ATTN ',
+                        MC502-O-MAIL-PRE-ADDR(1:35)
+                        DELIMITED BY SIZE    INTO M250-C-O-ADDRESS
+           WHEN OTHER
+                MOVE MC502-O-MAIL-PRE-ADDR     TO M250-C-O-ADDRESS
+           END-EVALUATE
+
+           MOVE M250-C-O-ADDRESS               TO M250-OT-C-O-ADDRESS(1)
+           MOVE MC502-O-MAIL-ADDR-LINE2        TO M250-STREET
+                                                  M250-OT-STREET(1)
+           MOVE MC502-O-MAIL-PREST-CITY        TO M250-CITY
+                                                  M250-OT-CITY(1)
+           MOVE MC502-O-MAIL-STATE             TO M250-STATE
+                                                  M250-OT-STATE(1)
+           MOVE MC502-O-MAIL-ZIP               TO M250-ZIP-CODE
+                                                  M250-OT-ZIP-CODE(1)
+           MOVE MC502-O-MAIL-ZIP-PLUS-4        TO M250-ZIP-CODE-SS
+                                                  M250-OT-ZIP-CODE-SS(1)
+           MOVE MC502-O-MAIL-COUNTRY-NAME      TO M250-COUNTRY
+
+           MOVE MC502-O-NAME                   TO M250-MASTER-NAME
+                                                  M250-OT-NAME(1)
+                                                  M250-CARD-NAME(1).
+           MOVE WS-CAU-LETTER                  TO M250-LETTER-TYPE.
+           MOVE WS-TOT-HOUSEHOLD-DUES          TO M250-TOTAL-DUE.
+           MOVE E270-OLD-LST4-DIGIT-CC
+                                             TO M250-EMBOSSER-MSG1(1:4)
+           MOVE E270-OLD-CARD-TYPE
+                                             TO M250-EMBOSSER-MSG1(5:16)
+           STRING E270-OLD-CARD-EXPDT(1:2) '/'  E270-OLD-CARD-EXPDT(3:2)
+                                                DELIMITED BY SIZE
+                                           INTO M250-CARD-EXP-DATE.
+           MOVE SPEC-HANDLING-C              TO M250-HANDLE-CODE.
+
+      /*****************************************************************
+       8220-GET-COMPANY-DATA.
+      ******************************************************************
+
+           MOVE E270-CLUB-CODE                 TO M250-CLUB-CODE
+
+           EXEC SQL
+                SELECT COMPANY_C
+                      ,GL_COMPANY_C
+                      ,STR_M
+                      ,CITY_M
+                      ,ST_C
+                      ,ZIP_C
+                      ,ZIP4_EXTN_C
+                INTO  :M250-COMPANY-CODE
+                     ,:M250-GL-COMPANY-CODE
+                     ,:M250-D-O-STREET
+                     ,:M250-D-O-CITY
+                     ,:M250-D-O-STATE
+                     ,:M250-D-O-ZIP-CODE
+                     ,:M250-D-O-ZIP-CODE-SS
+                FROM   AAA_CLUBS_TB
+                WHERE  CLUB_C = :M250-CLUB-CODE
+           END-EXEC.
+
+           EVALUATE SQLCODE
+           WHEN 0
+                CONTINUE
+           WHEN OTHER
+                DISPLAY 'PROBLEM WITH THE AAA_CLUBS_TB IN '
+                DISPLAY '8220-GET-COMPANY-DATA'
+                DISPLAY 'CLUB = ' M250-CLUB-CODE
+                MOVE SQLCODE                   TO MD900-SQLCODE
+                SET MD900-RC-DB2-SQL-ERROR     TO TRUE
+                MOVE 'S2000-GET-COMPANY-DATA'  TO MD900-PARAGRAPH-NAME
+                MOVE M250-CLUB-CODE            TO MD900-KEY-DATA-LN(1)
+                PERFORM 8990-MAIN-PGM-SQL-ERROR
+           END-EVALUATE.
+      *----------------------------------------------------------------
+      *  IF HOUSEHOLD HAS AN AC BILLPLAN AND IS IN EFT FILE CHANGE
+      *  BILLPLAN BACK TO AM
+      *----------------------------------------------------------------
+       8400-GET-AMOUNT-DUE.
+
+           MOVE '8400-GET-AMOUNT-DUE'
+                                             TO MD900-PARAGRAPH-NAME
+
+           INITIALIZE                           MD610-LINK-DATA
+
+           MOVE E270-CLUB-CODE               TO MD610-CLUB-CODE
+           MOVE E270-PRODUCT-ID              TO MD610-MEMBERSHIP-NUMBER
+           MOVE WS-RUN-DATE                  TO MD610-PROC-DATE
+           MOVE WS-PGM-NAME                  TO MD610-CALLING-PROG
+           SET  MD610-BATCH                  TO TRUE
+           SET  NO-ALLOC-PRIORITY            TO TRUE
+
+           CALL WS-MD610BR                USING MD610-LINK-DATA
+                                                MD960-LINK-DATA
+                                                MD900-ERROR-DATA.
+
+           IF MD900-RC-OK
+               MOVE MD610-TOTAL-DUE          TO WS-AMOUNT-DUE
+                                                WS-TOT-HOUSEHOLD-DUES
+           ELSE
+               MOVE E270-CLUB-CODE           TO MD900-KEY-DATA-LN (1)
+               MOVE E270-PRODUCT-ID          TO MD900-KEY-DATA-LN (2)
+               MOVE WS-MD610BR               TO MD900-PGM-NAME
+               PERFORM 9000-ERROR-HANDLING
+           END-IF.
+
+      /-----------------------------------------------------------------
+      *  GET NEXT EVENT BILLPLAN,IF BILLPLAN NOT = 'AC' DO NOT CHANGE
+      *  BILLPLAN TO AM AND WRITE TO FILE.
+      *-----------------------------------------------------------------
+       8500-CHECK-BILLPLN-NXTEVT.
+
+           SET  MD900-DB2-FUNCTION-SELECT    TO TRUE
+           MOVE '8500-CHECK-BILLPLN-NXTEVT'  TO MD900-PARAGRAPH-NAME
+           MOVE 'MBRSHP_NEXT_EVENT'          TO MD900-TABLE-CURSOR-NAME
+           MOVE  SPACES                      TO MD900-KEY-DATA
+           MOVE  E270-CLUB-CODE              TO MD900-KEY-DATA-LN(1)
+           MOVE  E270-PRODUCT-ID             TO MD900-KEY-DATA-LN(2)
+
+           EXEC SQL
+             SELECT FK_MBR_BILL_PLAN
+               INTO :WS-BILPLN-NXTEVT
+               FROM MBRSHP_NEXT_EVENT
+              WHERE FK_MHH_ACL_CLUB_C  = :E270-CLUB-CODE
+                AND FK_MHH_MBRSHP_N    = :E270-PRODUCT-ID
+           END-EXEC.
+
+           IF  SQLCODE = MD903-SQL-OK
+               CONTINUE
+           ELSE
+               DISPLAY 'PROBLEM WITH NXTEVT RECORD '
+               DISPLAY 'CLUB' E270-CLUB-CODE
+               DISPLAY 'MEMBER NO' E270-PRODUCT-ID
+               ADD 1                         TO WS-SKIPPED-COUNT
+               SET SKIP-RECORD-YES           TO TRUE
+           END-IF.
+
+      /SR1014857-CHECK LODGE TYPE TO DETERMINE OUT OF TERRITORY
+      *--------------------------------------------------------------*
+      *  ADDED FOR SR1014857- CALL MC501 TO GET LODGE TYPE           *
+      *--------------------------------------------------------------*
+       8600-GET-LODGE-TYPE.
+           INITIALIZE                   MC501-INPUT-OUTPUT.
+
+           MOVE '01'                 TO MC501-I-LOB-CODE.
+      ***IM4256690 BEGIN***************
+      **   MOVE E270-CLUB-CODE       TO MC501-I-PRODUCT-NUMBER
+      **   MOVE E270-PRODUCT-ID      TO MC501-I-CLUB-CODE.
+           MOVE E270-PRODUCT-ID      TO MC501-I-PRODUCT-NUMBER
+           MOVE E270-CLUB-CODE       TO MC501-I-CLUB-CODE.
+      ***IM4256690 END  ***************
+           MOVE 'MD058CB '           TO MC501-I-CALLING-PROGRAM.
+           MOVE '00'                 TO MC501-I-ROLE-CODE.
+
+           MOVE 'Y'                  TO MC501-I-REQ-CUST-LODGE.
+
+           CALL WS-MC501BCD       USING MC501-INPUT-OUTPUT.
+
+           EVALUATE MC501-O-RETURN-CODE
+           WHEN ZERO
+                MOVE MC501-O-LODGE-TYPE-CODE  TO WS-MACS-LODGE-TYPE
+           WHEN OTHER
+                MOVE MC501-O-RETURN-MESSAGE   TO MD900-ERROR-MSG-1
+                MOVE 'MC501 ERROR'            TO MD900-ERROR-MSG-2
+                SET  MD900-DB2-FUNCTION-SELECT
+                                              TO TRUE
+                MOVE '8600-GET-LODGE-TYPE  '  TO MD900-PARAGRAPH-NAME
+                MOVE MC501-O-RETURN-CODE      TO MD900-RETURN-CODE
+                MOVE WS-MC501BCD              TO MD900-PGM-NAME
+                MOVE E270-CLUB-CODE           TO MD900-KEY-DATA-LN (1)
+                MOVE E270-PRODUCT-ID          TO MD900-KEY-DATA-LN (2)
+                MOVE WS-MC501BCD              TO MD900-PGM-NAME
+                MOVE 'LODGE-ZIPCDE'           TO MD900-TABLE-CURSOR-NAME
+                SET MD900-DB2-FUNCTION-UPDATE TO TRUE
+                PERFORM 9000-ERROR-HANDLING
+           END-EVALUATE.
+
+      * MEM-480905 START
+      /-----------------------------------------------------------------
+      *  GET VALID CELL NUMBER
+      *-----------------------------------------------------------------
+       8700-GET-CELL-NUMBER.
+
+           SET  MD900-DB2-FUNCTION-SELECT    TO TRUE
+           MOVE '8700-GET-CELL-NUMBER'       TO MD900-PARAGRAPH-NAME
+           MOVE 'CUST_PHONE'                 TO MD900-TABLE-CURSOR-NAME
+           MOVE  SPACES                      TO MD900-KEY-DATA
+           MOVE  E270-CLUB-CODE              TO MD900-KEY-DATA-LN(1)
+           MOVE  E270-PRODUCT-ID             TO MD900-KEY-DATA-LN(2)
+
+           EXEC SQL
+             SELECT DISTINCT
+                    PHONE.AREA_C
+                   ,PHONE.PREF_N
+                   ,PHONE.SUFX_N
+                   ,PHONE.EXT_N
+                   ,PHONE.EXP_D
+               INTO :CUST-PHONE.AREA-C
+                  , :CUST-PHONE.PREF-N
+                  , :CUST-PHONE.SUFX-N
+                  , :CUST-PHONE.EXP-D
+               FROM CUST_PHONE PHONE
+              WHERE PHONE.FK_CUS_INUM = :WS-HOLD-CUST-NO
+                AND PHONE.ROLE_C      = 'CL'
+                AND PHONE.EXP_D       > CURRENT DATE
+              FETCH FIRST ROW ONLY
+           END-EXEC.
+
+           IF  SQLCODE = MD903-SQL-OK
+               SET PHONE-FOUND         TO TRUE
+               IF AREA-C OF CUST-PHONE > ZEROES
+      * MEM-481270 START
+                  MOVE '1'             TO WS-HOLD-CL-CCODE
+      * MEM-481270 END
+                  MOVE AREA-C OF CUST-PHONE
+                                       TO WS-HOLD-CL-AREA
+                  MOVE PREF-N OF CUST-PHONE
+                                       TO WS-HOLD-CL-PREF
+                  MOVE SUFX-N OF CUST-PHONE
+                                       TO WS-HOLD-CL-SUFF
+               ELSE
+                  SET NO-PHONE-FOUND   TO TRUE
+               END-IF
+           ELSE
+               IF SQLCODE = MD903-SQL-NOT-FOUND
+                  SET NO-PHONE-FOUND   TO TRUE
+               ELSE
+                  DISPLAY 'PROBLEM WITH CELL NUMBER '
+                  DISPLAY 'CLUB ' E270-CLUB-CODE
+                  DISPLAY 'MEMBER NO ' E270-PRODUCT-ID
+                  ADD 1                      TO WS-SKIPPED-COUNT
+                  SET SKIP-RECORD-YES        TO TRUE
+               END-IF
+           END-IF.
+
+      /-----------------------------------------------------------------
+      *  GET VALID EMAIL ADDRESS
+      *-----------------------------------------------------------------
+       8800-GET-EMAIL-ADDRESS.
+
+           SET  MD900-DB2-FUNCTION-SELECT    TO TRUE
+           MOVE '8800-GET-EMAIL-ADDRESS'     TO MD900-PARAGRAPH-NAME
+           MOVE 'CUST_EMAIL'                 TO MD900-TABLE-CURSOR-NAME
+           MOVE  SPACES                      TO MD900-KEY-DATA
+           MOVE  E270-CLUB-CODE              TO MD900-KEY-DATA-LN(1)
+           MOVE  E270-PRODUCT-ID             TO MD900-KEY-DATA-LN(2)
+
+           EXEC SQL
+             SELECT DISTINCT
+                    EMAIL_ADDRESS
+               INTO :EMAIL-ADDRESS
+               FROM CUST_EMAIL EMAIL
+              WHERE EMAIL.FK_CUS_INUM   = :WS-HOLD-CUST-NO
+                AND EMAIL.EXP_D         > CURRENT DATE
+                AND EMAIL.EMAIL_ADDRESS > '       '
+              FETCH FIRST ROW ONLY
+           END-EXEC.
+
+           IF  SQLCODE = MD903-SQL-OK
+               SET EMAIL-FOUND               TO TRUE
+               IF EMAIL-ADDRESS-TEXT > SPACES
+                  MOVE EMAIL-ADDRESS-TEXT    TO WS-HOLD-EMAIL-ADDR
+               ELSE
+                  SET NO-EMAIL-FOUND         TO TRUE
+               END-IF
+           ELSE
+               IF SQLCODE = MD903-SQL-NOT-FOUND
+                  SET NO-EMAIL-FOUND         TO TRUE
+               ELSE
+                  DISPLAY 'PROBLEM WITH EMAIL ADDRESS'
+                  DISPLAY 'CLUB ' E270-CLUB-CODE
+                  DISPLAY 'MEMBER NO ' E270-PRODUCT-ID
+                  ADD 1                      TO WS-SKIPPED-COUNT
+                  SET SKIP-RECORD-YES        TO TRUE
+               END-IF
+           END-IF.
+      * MEM-480905 END
+
+      ***************************************************************
+      * 8990 SETS UP SQL ERROR PROCESSING FOR MD058CB SQL ERRORS    *
+      ***************************************************************
+       8990-MAIN-PGM-SQL-ERROR.
+
+           MOVE WS-PGM-NAME                    TO MD900-PGM-NAME.
+           SET MD900-RC-DB2-SQL-ERROR          TO TRUE.
+           MOVE SQLCODE                        TO MD900-SQLCODE.
+           MOVE SQLCA                          TO MD900-SQLCA.
+           PERFORM 9000-ERROR-HANDLING.
+      /********************************************************
+      *9000-HANDLE-ERROR:                                     *
+      *    -COMMON ERROR HANDLING INCLUDING RETRY LOGIC       *
+      *********************************************************
+       9000-ERROR-HANDLING.
+
+           IF SQLCODE = MD903-SQL-DDLOCK-RLBK
+                     OR MD903-SQL-DDLOCK
+               ADD +1                          TO WS-RETRY-CT
+               IF WS-RETRY-CT <= MD910-RETRY-N
+                   IF SQLCODE = MD903-SQL-DDLOCK
+                       EXEC SQL
+                           ROLLBACK
+                       END-EXEC
+                   END-IF
+                   CLOSE CAUCCREJ-FILE
+                   GO TO 0000-MAINLINE
+               END-IF
+           END-IF.
+
+           EXEC SQL
+               ROLLBACK
+           END-EXEC.
+
+           PERFORM 9999-ABEND.
+
+      *-----------------------------------------------------------*
+       9025-DISPLAY-MACS-ERROR-MSG.
+      *-----------------------------------------------------------*
+           DISPLAY '                   '.
+           DISPLAY '        CLUB CODE: ' MD900-KEY-DATA-LN(1).
+           DISPLAY '       MEMBER NUM: ' MD900-KEY-DATA-LN(2).
+           DISPLAY '          EIP LTR: ' MD900-KEY-DATA-LN(3).
+           DISPLAY '     PROGRAM NAME: ' MD900-PGM-NAME.
+           DISPLAY '   PARAGRAPH NAME: ' MD900-PARAGRAPH-NAME.
+           DISPLAY ' MACS RETURN CODE: ' MD900-RETURN-CODE.
+           DISPLAY '     MACS SQLCODE: ' MD900-SQLCODE.
+           DISPLAY 'MACS SYST RETN CD: ' MD900-KEY-DATA-LN(4).
+           DISPLAY '    MACS TEXT MSG: ' MD900-ERROR-MSG-1.
+           DISPLAY '*******************'.
+
+      /****************************************************************
+      *    RESTART/RETRY CODE COPYBOOKS                               *
+      *****************************************************************
+       9900-RESTART-INIT.
+           COPY MRD910CA.
+
+      /****************************************************************
+       9901-CHK-COMMIT-FREQ.
+           COPY MRD910CB.
+
+      /****************************************************************
+       9902-RESTART-END.
+           COPY MRD910CC.
+
+      /****************************************************************
+       9910-CALL-RESTART-PGM.
+           COPY MRD910CD.
+
+      /****************************************************************
+       9994-FILL-ABEND-DATA.
+
+           SET MD900-RC-DB2-SQL-ERROR         TO TRUE
+           MOVE SQLCODE                       TO MD900-SQLCODE
+           MOVE 'CAUCCREJ'                    TO MD900-TABLE-CURSOR-NAME
+           MOVE SQLCA                         TO MD900-SQLCA.
+
+      /****************************************************************
+       9999-ABEND.
+           COPY MRD902C.
+      ********************** END OF PROGRAM ***********************
