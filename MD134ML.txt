@@ -1,0 +1,742 @@
+      *============================================================
+      *      I D E N T I F I C A T I O N   D I V I S I O N
+      *============================================================
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID.     MD134ML.
+       DATE-COMPILED.
+      *****************************************************************
+      *                                                               *
+      *  PROGRAM:   MD134ML                                           *
+      *  LANGUAGE   :  COBOL II                                       *
+      *  PURPOSE:   THIS PROGRAM WILL CREATE EMAILS FOR MP BILL PLAN  *
+      *             WITH DATA FROM THE EIP FILE.                      *
+      *                                                               *
+      *===============================================================*
+      * 01/13/2017   M DIEP  INITIAL IMPLEMENTATION                   *
+      * 04/03/2017   M DIEP  Recompile for new MRDEIPC                *
+      * 07/18/2017   s.w.    Recompile for new MRDEIPC                *
+      * 06/21/2018   M DIEP  INC943560                                *
+      *                      Do not send email if letter 139 were     *
+      *                      triggered by changes on the web          *
+      *                      to locate changes, looke for 'INC943560' *
+      * 02/14/2019   Phil B  MEM-18-01C: Add 4 fields and header      *
+      * 12/04/2025   Ranski  MEM-481279: Membership Communication     *
+      *                      Visibility update of the Correspondence  *
+      *                      Table for all EMAIL Correspondence       *
+      *===============================================================*
+
+      /===============================================================*
+      *            E N V I R O N M E N T   D I V I S I O N            *
+      *===============================================================*
+       ENVIRONMENT DIVISION.
+
+       CONFIGURATION SECTION.
+
+       INPUT-OUTPUT SECTION.
+
+       FILE-CONTROL.
+
+           SELECT EIP-FILE-IN
+              ASSIGN TO MDEIPIN
+                  FILE STATUS IS MD134IP-STATUS.
+
+           SELECT EMAIL-FILE-OUT
+              ASSIGN TO MD134OP
+                  FILE STATUS IS MD134OP-STATUS.
+
+      /
+      *===============================================================*
+      *                D A T A    D I V I S I O N                     *
+      *===============================================================*
+       DATA DIVISION.
+       FILE SECTION.
+
+       FD  EIP-FILE-IN
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  EIP-REC-IN                   PIC X(5500).
+
+
+       FD  EMAIL-FILE-OUT
+           LABEL RECORD ARE STANDARD
+           BLOCK CONTAINS 0 RECORDS
+           RECORDING MODE IS F.
+
+       01  EMAIL-REC-OUT                PIC X(350).
+
+      *===============================================================*
+      *        W O R K I N G    S T O R A G E    S E C T I O N        *
+      *===============================================================*
+       WORKING-STORAGE SECTION.
+
+       01  FILLER                       PIC X(50) VALUE
+           '*** PROGRAM MD134ML  --- BEGIN WORKING-STORAGE ***'.
+
+       01  PROGRAM-NAMES.
+           05  WS-PGM-NAME              PIC  X(08) VALUE 'MD134ML '.
+           05  WS-MD920BR               PIC  X(08) VALUE 'MD920BR '.
+           05  WS-MD930BR               PIC  X(08) VALUE 'MD930BR '.
+           05  WS-MD999CK               PIC  X(08) VALUE 'MD999CK '.
+           05  WS-MD607BR               PIC  X(08) VALUE 'MD607BR '.
+      * MEM-481279 START
+           05  WS-MD300MA               PIC  X(08) VALUE 'MD300MA '.
+      * MEM-481279 END
+
+       01  MISC.
+           05  PARAGRAPH-NAME           PIC  X(40) VALUE SPACES.
+
+       01  NUMBERS-AND-CONSTANTS.
+           05  MD134IP-STATUS           PIC  9(02) VALUE ZEROS.
+           05  MD134OP-STATUS           PIC  9(02) VALUE ZEROS.
+           05  WK-DISPLAY-TOTAL         PIC ---------9.
+           05  WS-EIP-REC-IN-COUNT      PIC 9(09)  VALUE ZEROES.
+           05  WS-EMAIL-COUNT           PIC 9(09)  VALUE ZEROES.
+           05  WS-CLUB-C                PIC X(03)  VALUE SPACES.
+           05  WS-MBRSHP-N              PIC X(09)  VALUE SPACES.
+           05  WS-COUNT                 PIC S9(9)  COMP.
+           05  WK-BEGIN-TS              PIC X(26)
+                             VALUE '0001-01-01-00.00.00.000000'.
+           05  FILLER REDEFINES WK-BEGIN-TS.
+               10 WK-BEGIN-DATE         PIC X(10).
+               10 FILLER                PIC X(16).
+           05  WK-END-TS                PIC X(26)
+                             VALUE '0001-01-01-23.59.59.999999'.
+           05  FILLER REDEFINES WK-END-TS.
+               10 WK-END-DATE           PIC X(10).
+               10 FILLER                PIC X(16).
+      ***MEM-18-01C BEGIN***************
+           05  WS-COMMA                     PIC X(01) VALUE ';'.
+           05  WS-YEARS-MEMBER              PIC 9(03) VALUE ZERO.
+           05  WS-SPINOFF-AGE               PIC 9(02) VALUE ZERO.
+           05  WS-JOIN-YEAR                 PIC 9(04) VALUE ZERO.
+           05  WS-EXP-YEAR                  PIC 9(04) VALUE ZERO.
+      ***MEM-18-01C END  ***************
+      * MEM-481279 START
+           05  WS-HOLD-CORR-TYPE          PIC x(03) VALUE SPACES.
+      * MEM-481279 END
+
+       01  FLAGS-AND-SWITCHES.
+           05  WK-EIP-FILE-IN-EOF-SW    PIC  X(01)  VALUE 'N'.
+               88  EIP-FILE-IN-EOF                  VALUE 'Y'.
+               88  EIP-FILE-IN-NOT-EOF              VALUE 'N'.
+      * INC943560 begin
+           05  WK-SEND-EMAIL-SW         PIC  X(01)  VALUE 'Y'.
+               88  SEND-EMAIL                       VALUE 'Y'.
+               88  NOT-SEND-EMAIL                   VALUE 'N'.
+      * INC943560 end
+
+      /**********************************************************
+      *    COPYLIBS                                             *
+      ******************************************************************
+      *** COPY BOOKS FOR THE BUSINESS RULE CSR                       ***
+      ******************************************************************
+      *----------------------------------------------------------------
+      * EIP DATA RECORD
+      *----------------------------------------------------------------
+       01  EIP-DATA-REC.
+       COPY MRDEIPC.
+      /
+      *----------------------------------------------------------------
+      *   EMAIL RECORD
+      *----------------------------------------------------------------
+       01  MD134-RECORD.
+       COPY MRD134C.
+
+      /*****************************************************************
+      *    EIP LETTER LOOKUP FILE FORMAT                               *
+      ******************************************************************
+       01  MD607-INPUT-OUTPUT.
+           COPY MRD607C1.
+
+      * MEM-481325 START
+      /*****************************************************************
+      *** CORRESPONDENCE HISTORY                                       *
+      ******************************************************************
+       01  MD300-RECORD.
+           COPY MRD300C.
+      * MEM-481325 END
+
+      *===============================================================*
+       01 MD900-ERROR-DATA.
+         COPY MRD900C.
+      /
+      *===============================================================*
+       01 MD901-ERROR-DATA.
+         COPY MRD901C.
+      /
+      * INC943560 begin
+      *===============================================================*
+       01 MD903-SQL-ERRORS.
+          COPY MRD903C.
+      /
+      * INC943560 end
+      ******************************************************************
+      *   MD930BR  LINK DATA - PROCESSING DATE                         *
+      ******************************************************************
+       01 MD930-LINK-DATA.
+          COPY MRD930C.
+      /
+      *----------------------------------------------------------------
+      *    MD999CK LINK DATA - 16 DIGIT MEMBERSHIP NUMBER
+      *----------------------------------------------------------------
+       01  MD999-LINK-DATA.
+       COPY MRD999CK.
+      /
+      * INC943560 begin
+      *===============================================================*
+      *    SQL INCLUDE FOR SQLCA                                      *
+      *===============================================================*
+           EXEC SQL
+                INCLUDE SQLCA
+           END-EXEC.
+
+      *===============================================================*
+      * COBOL DECLARATION FOR MBRSHP_MONTHLY_CHARGE_DTL
+      *===============================================================*
+           EXEC SQL
+               INCLUDE MBRMCDTL
+           END-EXEC.
+
+      * INC943560 end
+      /===============================================================*
+      *                                                               *
+       01  FILLER                       PIC X(50) VALUE
+           '*** PROGRAM MD134ML  --- END WORKING-STORAGE ***'.
+
+       LINKAGE SECTION.
+
+      /
+      *===============================================================*
+      *                                                               *
+      *            P R O C E D U R E    D I V I S I O N               *
+      *                                                               *
+      *===============================================================*
+       PROCEDURE DIVISION.
+       00000-MAIN-LINE.
+
+           MOVE '00000-MAIN-LINE'              TO PARAGRAPH-NAME.
+      *    DISPLAY PARAGRAPH-NAME.
+
+           PERFORM A0000-INITIALIZE.
+
+           PERFORM B0000-PROCESS-EIP-RECS
+               UNTIL EIP-FILE-IN-EOF.
+
+           PERFORM Z0000-CLOSE.
+
+           GOBACK.
+
+      /===============================================================*
+      *  INITIALIZE AND OPEN FILES
+      *===============================================================*
+       A0000-INITIALIZE.
+
+           MOVE 'A0000-INITIALIZE'             TO PARAGRAPH-NAME.
+      *    DISPLAY PARAGRAPH-NAME.
+
+           PERFORM A1000-OPEN-FILES.
+
+           PERFORM A3000-GET-PROCESS-DATE.
+
+           PERFORM A4000-GET-JOB-NAME.
+      ***MEM-18-01C begin******************
+           PERFORM A5000-WRITE-HEADER.
+      ***MEM-18-01C end  ******************
+
+           PERFORM R0000-READ-EIP-FILE-IN.
+
+      *===============================================================*
+       A1000-OPEN-FILES.
+
+           OPEN INPUT  EIP-FILE-IN
+                OUTPUT EMAIL-FILE-OUT.
+
+           IF  (MD134IP-STATUS NOT = 00 OR
+                MD134OP-STATUS NOT = 00)
+               MOVE 'A1000-OPEN-FILES'        TO MD900-PARAGRAPH-NAME
+               MOVE WS-PGM-NAME               TO MD900-PGM-NAME
+               MOVE 'FILES OPEN ERROR'        TO MD900-ERROR-MSG-1
+               MOVE MD134IP-STATUS            TO MD900-KEY-DATA-LN(1)
+               MOVE MD134OP-STATUS            TO MD900-KEY-DATA-LN(2)
+               PERFORM Z9999-ERROR
+           END-IF.
+
+      ******************************************************************
+      * CALL MD930BR TO GET BATCH PROCESS DATE                         *
+      ******************************************************************
+       A3000-GET-PROCESS-DATE.
+
+           INITIALIZE MD930-LINK-DATA
+                      MD900-ERROR-DATA.
+
+           CALL WS-MD930BR                   USING MD930-LINK-DATA
+                                                   MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+      * INC943560 begin
+               MOVE MD930-ISO-DT             TO WK-BEGIN-DATE
+                                                WK-END-DATE
+      * INC943560 end
+           ELSE
+               MOVE 'A3000-GET-PROCESS-DATE' TO MD900-PARAGRAPH-NAME
+               MOVE WS-MD930BR               TO MD900-PGM-NAME
+               MOVE 'CALL TO MD930BR FAILED' TO MD900-ERROR-MSG-1
+               PERFORM Z9999-ERROR
+           END-IF.
+      /
+      ******************************************************************
+      * CALL MD920BR TO GET JOB NAME                                   *
+      ******************************************************************
+       A4000-GET-JOB-NAME.
+
+           INITIALIZE                             MD900-ERROR-DATA.
+
+           CALL WS-MD920BR  USING MD901-JOB-NAME
+                                  MD900-ERROR-DATA.
+           IF MD900-RC-OK
+              CONTINUE
+           ELSE
+               MOVE 'A4000-GET-JOB-NAME'     TO MD900-PARAGRAPH-NAME
+               MOVE WS-MD920BR               TO MD900-PGM-NAME
+               MOVE 'CALL TO MD920BR FAILED' TO MD900-ERROR-MSG-1
+               PERFORM Z9999-ERROR
+           END-IF.
+      /
+      ******************************************************************
+      * WRITE HEADER RECORD FOR OUTPUT FILE                            *
+      ******************************************************************
+       A5000-WRITE-HEADER.
+
+           INITIALIZE EMAIL-REC-OUT.
+
+           STRING 'EMAILTYPE'
+                   WS-COMMA
+                  'EVENTDATE'
+                   WS-COMMA
+                  'CLUBCODE'
+                   WS-COMMA
+                  'SHORTMEMBERNUMBER'
+                   WS-COMMA
+                  'EXPIRATIONDATE'
+                   WS-COMMA
+                  'BILLPLAN'
+                   WS-COMMA
+                  'FULLMEMBERNUMBER'
+                   WS-COMMA
+                  'MONTHLYDUE'
+                   WS-COMMA
+                  'PASTDUE'
+                   WS-COMMA
+                  'PAYDAYOFMONTH'
+                   WS-COMMA
+                  'CREDITCARDLAST4'
+                   WS-COMMA
+                  'CUSTID'
+                   WS-COMMA
+                  'NAMESUFFIX'
+                   WS-COMMA
+                  'FIRSTNAME'
+                   WS-COMMA
+                  'LASTNAME'
+                   WS-COMMA
+                  'EMAILADDRESS'
+                   WS-COMMA
+                  'RENEWALDATE'
+                   WS-COMMA
+                  'YEARSMEMBER'
+                   WS-COMMA
+                  'ZIPCODE'
+                   WS-COMMA
+                  'SPINOFFAGE'
+                   WS-COMMA
+                  DELIMITED BY SIZE     INTO EMAIL-REC-OUT
+           END-STRING.
+
+           WRITE EMAIL-REC-OUT.
+
+      *===============================================================*
+      *  MAIN PROCESS - PROCESS THE MEMBER CORRESPONDENCE RECORD
+      *               - AND READ THE NEXT RECORD IN THE CURSOR        *
+      *===============================================================*
+       B0000-PROCESS-EIP-RECS.
+
+           MOVE 'B0000-PROCESS-EIP-RECS' TO PARAGRAPH-NAME.
+      *    DISPLAY PARAGRAPH-NAME.
+
+           PERFORM B0100-WILL-EMAIL-BE-PRODUCED.
+
+           IF MD607-EMAIL-CORR-TYPE-C > SPACES AND
+              MD607-BILL-CORR-TYPE-ECORR AND
+              MD607-PROCESS-NEW AND
+              MDEIP-ADDR-EMAIL > SPACES
+              SET SEND-EMAIL                   TO TRUE
+      * INC943560 begin
+              IF MDEIP-LETTER-C = '139'
+                 PERFORM B0200-DO-NOT-SEND-EMAIL
+              END-IF
+              IF SEND-EMAIL
+                 PERFORM B1000-PRODUCE-EMAIL
+              END-IF
+      * INC943560 end
+           END-IF.
+
+           PERFORM R0000-READ-EIP-FILE-IN.
+
+      ******************************************************************
+      * DETERMINE IF EMAIL NEEDS TO BE PRODUCED                       *
+      ******************************************************************
+       B0100-WILL-EMAIL-BE-PRODUCED.
+
+           INITIALIZE                             MD607-INPUT-OUTPUT.
+           MOVE MDEIP-CLUB-C                   TO MD607-CLUB-C.
+
+           MOVE MDEIP-LETTER-C                 TO MD607-LETTER-C.
+           MOVE MD930-DB2-PROC-DT              TO MD607-EFF-D.
+
+           CALL WS-MD607BR                  USING MD607-INPUT-OUTPUT
+                                                  MD900-ERROR-DATA.
+
+           IF  MD900-RC-OK
+               CONTINUE
+           ELSE
+               DISPLAY '********************************************'
+               DISPLAY '***MD125EM - B0100-WILL-EMAIL-BE-PRODUCED'
+               DISPLAY '***CLUB/LETTER USED ' MDEIP-CLUB-C '/'
+                              MDEIP-LETTER-C
+               DISPLAY '********************************************'
+               MOVE MDEIP-CLUB-C              TO MD900-KEY-DATA-LN(1)
+               MOVE MDEIP-LETTER-C            TO MD900-KEY-DATA-LN(2)
+               MOVE 'B0100-WILL-EMAIL-BE-PRODUCED'
+                                              TO MD900-PARAGRAPH-NAME
+               MOVE WS-MD607BR                TO MD900-PGM-NAME
+               PERFORM Z9999-ERROR
+           END-IF.
+
+      * INC943560 begin
+       B0200-DO-NOT-SEND-EMAIL.
+
+           MOVE MDEIP-CLUB-C        TO WS-CLUB-C
+           MOVE MDEIP-MBRSHP-N      TO WS-MBRSHP-N
+
+           EXEC SQL
+                SELECT COUNT(*)
+                  INTO :WS-COUNT
+                  FROM MBRSHP_MONTHLY_CHARGE_DTL
+                 WHERE FK_MHH_ACL_CLUB_C = :WS-CLUB-C
+                   AND FK_MHH_MBRSHP_N   = :WS-MBRSHP-N
+                   AND (CHARGE_ADJ_TYPE = 'ADD' OR
+                        CHARGE_ADJ_TYPE = 'CANCEL')
+                   AND CHG_EFF_S BETWEEN :WK-BEGIN-TS
+                                     AND :WK-END-TS
+         -------- creatd on the web ------------------------------
+                   AND DA_EMP_SECT_N = '36  '
+                   AND DA_EMP_USER_ID_N = '009999'
+           END-EXEC.
+
+           EVALUATE SQLCODE
+           WHEN MD903-SQL-OK
+                IF WS-COUNT > 0
+                   SET NOT-SEND-EMAIL              TO TRUE
+                END-IF
+           WHEN OTHER
+               DISPLAY '********************************************'
+               DISPLAY '*** B0200-DO-NOT-SEND-EMAIL-FOR-139      '
+               DISPLAY '*** CLUB   = ' MDEIP-CLUB-C
+               DISPLAY '*** MBRSHP = ' MDEIP-MBRSHP-N
+               DISPLAY '*** SQL CD = ' SQLCODE
+               DISPLAY '********************************************'
+               MOVE MDEIP-CLUB-C              TO MD900-KEY-DATA-LN(1)
+               MOVE MDEIP-MBRSHP-N            TO MD900-KEY-DATA-LN(2)
+               MOVE SQLCODE                   TO MD900-KEY-DATA-LN(3)
+               MOVE 'B0200-DO-NOT-SEND-EMAIL-FOR-139'
+                                              TO MD900-PARAGRAPH-NAME
+               MOVE WS-PGM-NAME               TO MD900-PGM-NAME
+               PERFORM Z9999-ERROR
+           END-EVALUATE.
+      * INC943560 end
+
+       B1000-PRODUCE-EMAIL.
+
+           MOVE MD607-EMAIL-CORR-TYPE-C  TO MD134-O-EMAIL-TYPE.
+           MOVE MD930-PROC-MO            TO MD134-O-EXT-MO.
+           MOVE MD930-PROC-DY            TO MD134-O-EXT-DY.
+           MOVE MD930-PROC-YR            TO MD134-O-EXT-YR.
+           MOVE MDEIP-CLUB-C             TO MD134-O-CLUB-C.
+           MOVE MDEIP-MBRSHP-N           TO MD134-O-MBRSHP-NBR.
+           MOVE MDEIP-REN-TERM-EXP-D     TO MD134-O-EXP-DATE.
+           MOVE MDEIP-BILL-PLAN          TO MD134-O-BILL-PLAN.
+
+           PERFORM B3000-CALL-MD999CK.
+
+           MOVE MD999CK-CHECK-DIGIT      TO MD134-O-MBRSHP-NBR-16.
+           MOVE MDEIP-TOTAL-DUES-MP      TO MD134-O-MONTHLY-DUE.
+           MOVE MDEIP-TOTAL-PAST-DUES-MP TO MD134-O-PAST-DUE.
+
+           IF MD134-O-EMAIL-TYPE = 'MPNOAUTHPMT'
+              IF MDEIP-TOTAL-PAST-DUES-MP > 0
+                 MOVE 'MPNOAUTHNOPMT'    TO MD134-O-EMAIL-TYPE
+              ELSE
+                 MOVE 'MPNOAUTH'         TO MD134-O-EMAIL-TYPE
+              END-IF
+           END-IF.
+
+           MOVE MDEIP-PAY-DAY-OF-THE-MONTH
+                                         TO MD134-O-PAY-DAY-OF-MONTH.
+           MOVE MDEIP-AUTOPAY-ACCT-LAST-4
+                                         TO MD134-O-CREDIT-CARD-LAST4.
+           MOVE MDEIP-CUST-ID            TO MD134-O-CUSTOMER-NBR.
+           MOVE MDEIP-MRD-NAME-SUFFIX (1)TO MD134-O-NAME-SUFFIX.
+           MOVE MDEIP-MRD-NAME-FIRST (1) TO MD134-O-FIRST-NAME.
+           MOVE MDEIP-MRD-NAME-LAST (1)  TO MD134-O-LAST-NAME.
+           MOVE MDEIP-ADDR-EMAIL         TO MD134-O-EMAIL.
+      ***MEM-18-01C BEGIN**************
+           MOVE SPACES TO MD134-O-RENEWAL-DATE
+           EVALUATE MD134-O-EXP-MO
+             WHEN '01'
+               STRING 'January ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '02'
+               STRING 'February ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '03'
+               STRING 'March ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '04'
+               STRING 'April ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '05'
+               STRING 'May ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '06'
+               STRING 'June ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '07'
+               STRING 'July ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '08'
+               STRING 'August ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '09'
+               STRING 'September ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '10'
+               STRING 'October ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '11'
+               STRING 'November ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+             WHEN '12'
+               STRING 'December ' MD134-O-EXP-DY
+                  DELIMITED BY SIZE   INTO MD134-O-RENEWAL-DATE
+           END-EVALUATE.
+
+           MOVE MDEIP-MRD-AAA-JOIN-YEAR(1) TO WS-JOIN-YEAR
+           MOVE MD134-O-EXP-YR  TO WS-EXP-YEAR
+           SUBTRACT WS-JOIN-YEAR FROM WS-EXP-YEAR
+              GIVING WS-YEARS-MEMBER
+           IF WS-YEARS-MEMBER <= 0
+              MOVE 1 TO WS-YEARS-MEMBER
+           END-IF
+           MOVE WS-YEARS-MEMBER          TO MD134-O-YEARS-MBR
+           IF WS-YEARS-MEMBER < 10
+              MOVE '  ' TO MD134-O-YEARS-MBR(1:2)
+           ELSE
+              IF WS-YEARS-MEMBER < 100
+                 MOVE ' ' TO MD134-O-YEARS-MBR(1:1)
+              END-IF
+           END-IF
+
+           MOVE MDEIP-ADDR-ZIP           TO MD134-O-ZIPCODE.
+
+           ADD 1 TO MDEIP-SPINOFF-MAX-AGE
+             GIVING WS-SPINOFF-AGE
+           MOVE WS-SPINOFF-AGE           TO MD134-O-SPINOFF-AGE.
+      ***MEM-18-01C END  **************
+
+           INSPECT MD134-RECORD REPLACING ALL ';' BY SPACES.
+           MOVE ';'                      TO MD134-O-SEPARATOR-1
+                                            MD134-O-SEPARATOR-2
+                                            MD134-O-SEPARATOR-3
+                                            MD134-O-SEPARATOR-4
+                                            MD134-O-SEPARATOR-5
+                                            MD134-O-SEPARATOR-6
+                                            MD134-O-SEPARATOR-7
+                                            MD134-O-SEPARATOR-8
+                                            MD134-O-SEPARATOR-9
+                                            MD134-O-SEPARATOR-10
+                                            MD134-O-SEPARATOR-11
+                                            MD134-O-SEPARATOR-12
+                                            MD134-O-SEPARATOR-13
+                                            MD134-O-SEPARATOR-14
+                                            MD134-O-SEPARATOR-15
+                                            MD134-O-SEPARATOR-16
+                                            MD134-O-SEPARATOR-17
+                                            MD134-O-SEPARATOR-18
+                                            MD134-O-SEPARATOR-19
+                                            MD134-O-SEPARATOR-20.
+
+           WRITE EMAIL-REC-OUT               FROM MD134-RECORD.
+           ADD 1                             TO WS-EMAIL-COUNT.
+
+      * MEM-481279 START
+           IF MDEIP-LETTER-C = '139'
+              MOVE SPACES              TO WS-HOLD-CORR-TYPE
+              MOVE '639'               TO WS-HOLD-CORR-TYPE
+              PERFORM B4000-UPDATE-CORR-HIST
+           END-IF.
+      * MEM-481279 END
+
+      /
+      ******************************************************************
+      *  CALL MD999CK TO GET 16 DIGIT MEMBERSHIP NUMBER                *
+      ******************************************************************
+       B3000-CALL-MD999CK.
+
+           INITIALIZE MD999-LINK-DATA.
+
+           MOVE MDEIP-CLUB-C                 TO MD999CK-CLUB-CODE.
+           MOVE MDEIP-PRINT-MBRSHP-N         TO MD999CK-MEMBER.
+           MOVE '0'                          TO MD999CK-ROLE-CODE.
+
+      *** NOTE: THERE IS NO RETURN CODE OR ERROR INFO COMING BACK FROM
+      *** MD999CK. IT EITHER ABENDS OR RETURNS THE DATA.
+
+           CALL WS-MD999CK                   USING MD999-LINK-DATA.
+
+      * MEM-481279 START
+      ******************************************************************
+      *  CALL MD300MA TO UPDATE CORRESPONDENCE HISTORY TABLE           *
+      ******************************************************************
+       B4000-UPDATE-CORR-HIST.
+      *************************************************************
+
+           INITIALIZE                     MD300-RETURN-INFORMATION
+                                          MD300-PASSED-INFORMATION.
+
+           SET  MD300-UPDATE-REQUESTED TO TRUE.
+
+           SET  MD300-TODAYS-DATE      TO TRUE
+
+           MOVE 'ADD'                  TO MD300-ACTION-REQUESTED.
+
+           MOVE MDEIP-CLUB-C           TO MD300-CLUB-CODE.
+
+           MOVE MDEIP-MBRSHP-N         TO MD300-MEMBER-NUMBER
+                                          MD300-FK-MHH-MBRSHP-N(1).
+
+           MOVE MD930-ISO-DT           TO MD300-SEND-DATE
+                                          MD300-SEND-D(1)
+                                          MD300-PROCESSING-D(1)
+
+           MOVE 'Y'                    TO MD300-CHG-PROCESSING-D
+           MOVE 1                      TO MD300-INDICATOR
+
+           MOVE MDEIP-CLUB-C           TO MD300-CMC-CLUB-CODE
+                                          MD300-FK-CMC-ACL-CLUB-C(1)
+                                          MD300-FK-MHH-ACL-CLUB-C(1).
+
+           MOVE '00'                   TO MD300-ROLE-CODE
+                                          MD300-FK-MBR-MRO-ROLE-C(1).
+
+           MOVE MD930-DB2-PROC-DT      TO MD300-MBR-EFF-D
+                                          MD300-FK-MBR-EFF-D(1).
+           MOVE WS-HOLD-CORR-TYPE      TO MD300-CORR-TYPE
+                                          MD300-FK-CMC-CORR-TYPE-C(1).
+
+
+           CALL WS-MD300MA          USING MD300-RECORD.
+
+           EVALUATE TRUE
+           WHEN MD300-NO-ERRORS
+                CONTINUE
+           WHEN MD300-MEMBER-REC-NOT-FND
+                DISPLAY '**MBRSHIP IS CANCELLED       **'
+                        '**CORRESPONDENCE NOT WRITTEN **'
+                         WS-CLUB-C '/' WS-MBRSHP-N
+           WHEN MD300-ERROR-SQLCODE = 100
+                DISPLAY '**MBRSHIP MISSING            **'
+                        '**CORRESPONDENCE NOT WRITTEN **'
+                         WS-CLUB-C '/' WS-MBRSHP-N
+           WHEN OTHER
+               MOVE WS-MD300MA                 TO MD900-PGM-NAME
+               MOVE '1970-UPDATE-CORR-HIST'    TO MD900-PARAGRAPH-NAME
+               MOVE WS-CLUB-C                  TO MD900-KEY-DATA-LN(1)
+               MOVE WS-MBRSHP-N                TO MD900-KEY-DATA-LN(2)
+               MOVE WS-HOLD-CORR-TYPE          TO MD900-KEY-DATA-LN(3)
+               IF  MD300-ERROR-PROBLEM-NAME > SPACES
+                   MOVE MD300-ERROR-PROBLEM-NAME
+                                               TO MD900-ERROR-MSG-1
+               ELSE
+                   MOVE
+                    ' ERROR WITH CALL TO MD300MA - 1970-UPDATE '
+                                               TO MD900-ERROR-MSG-1
+               END-IF
+
+               IF  MD300-SQL-ERROR
+                   SET MD900-RC-DB2-SQL-ERROR  TO TRUE
+                   MOVE MD300-ERROR-SQLCODE    TO MD900-SQLCODE
+               ELSE
+                   MOVE MD300-RETURN-CODE      TO MD900-RETURN-CODE
+               END-IF
+
+               PERFORM Z9999-ERROR
+           END-EVALUATE.
+
+      * MEM-481279 END
+
+      /===============================================================*
+      * READ EIP FILE IN                                              *
+      *===============================================================*
+       R0000-READ-EIP-FILE-IN.
+
+           MOVE 'R0000-READ-EIP-FILE-IN'       TO PARAGRAPH-NAME.
+      *    DISPLAY PARAGRAPH-NAME.
+
+           READ EIP-FILE-IN INTO EIP-DATA-REC
+                AT END SET EIP-FILE-IN-EOF TO TRUE
+            NOT AT END ADD +1        TO WS-EIP-REC-IN-COUNT.
+
+      *===============================================================*
+      *      Z0000-CLOSE.
+      *===============================================================*
+       Z0000-CLOSE.
+
+           MOVE 'Z0000-CLOSE     ' TO PARAGRAPH-NAME.
+      *    DISPLAY PARAGRAPH-NAME.
+
+           CLOSE EIP-FILE-IN
+                 EMAIL-FILE-OUT.
+
+           IF  (MD134IP-STATUS NOT = 00 OR
+                MD134OP-STATUS NOT = 00)
+               MOVE 'Z0000-CLOSE'             TO MD900-PARAGRAPH-NAME
+               MOVE WS-PGM-NAME               TO MD900-PGM-NAME
+               MOVE 'FILES close ERROR'    TO MD900-ERROR-MSG-1
+               MOVE MD134IP-STATUS            TO MD900-KEY-DATA-LN(1)
+               MOVE MD134OP-STATUS            TO MD900-KEY-DATA-LN(2)
+               PERFORM Z9999-ERROR
+           END-IF.
+
+           DISPLAY ' '.
+           DISPLAY ' '.
+           MOVE WS-EIP-REC-IN-COUNT      TO WK-DISPLAY-TOTAL.
+           DISPLAY ' TOTAL RECORDS IN = '   WK-DISPLAY-TOTAL.
+           DISPLAY ' '.
+
+           MOVE WS-EMAIL-COUNT           TO WK-DISPLAY-TOTAL.
+           DISPLAY ' TOTAL EMAIL OUT  = '   WK-DISPLAY-TOTAL.
+           DISPLAY ' '.
+
+      ***************************************************************
+      * ABEND ROUTINE                                               *
+      ***************************************************************
+       Z9999-ERROR.
+
+           COPY MRD902C.
+
+       9999-ABEND.
+            COPY MRD902C.
+
+      *======================END=OF=PROGRAM======================*
