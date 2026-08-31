@@ -47,7 +47,7 @@ transactional object model plus asynchronous Apex in place of nightly JCL:
 | `EMS_WORK_CAU`, `EMS_WORK_LETTER` (legacy letter/print queues) | Replaced by direct, synchronous notification generation (no queue table) triggered by Batch/Queueable Apex, logged to a new `Correspondence__c` object instead of being staged for a separate print/extract job |
 | `EMS_WORK_CCREJ` (Finance-populated credit-card-decline work table) | A `blng__Payment__c` record transitioning to a Declined/Failed status, surfaced via a Platform Event (`Card_Decline_Event__e`) published by middleware or a `blng__Payment__c` trigger |
 | `CAUCCREJ` file (EFT card-auto-update reject feed) | A staging custom object `Eft_Cau_Reject__c`, populated by inbound integration (Platform Event or Apex REST from the EFT/middleware layer), processed by `EftReconciliationBatch` |
-| Flat-file SMS/Push/Email extracts (`OSMSFILE`, `OPSHFILE`, `MD134OP`, `MD572O1`, `OUTSMS`/`OUTPSH`/`OUTEML`) | Direct outbound callouts from Apex to a notification gateway (SMS/push/email provider) via External Services + Named Credential — no intermediate file, no separate downstream pickup job |
+| Flat-file SMS/Push/Email extracts (`OSMSFILE`, `OPSHFILE`, `MD134OP`, `MD572O1`, `OUTSMS`/`OUTPSH`/`OUTEML`) | **Corrected** (see §4 changelog note): the same flat-file hand-off pattern, not a live provider API. Apex accumulates one row per notification in memory over the run, then uploads one file per channel per run to **MOVEit** (managed file transfer) via HTTPS/Named Credential, landing in a shared folder in `.txt` or `.csv` format (varies by legacy program — see §4) for the same downstream SMS gateway / push service / EBIZ-EIP email processor to pick up, exactly as it did with `OSMSFILE`/`OUTSMS`/etc. MOVEit Automation is expected to apply PGP encryption server-side after upload; Apex does not do PGP |
 | JCL scheduling / SYSIN parameters (interval days, club lists) | `Schedulable` Apex + Custom Metadata Type records (`Renewal_Notification_Rule__mdt`) — parameters become declarative, editable-without-deployment configuration, matching the spirit of the COBOL programs that already externalized some of this to `MD699BR` business rules |
 | `MD930BR` (get processing date) | `System.today()` / `Datetime.now()` — no subroutine call needed |
 | `MD999CK` (club+member → 16-digit check-digit membership number) | A formula field or invocable Apex utility on `Asset`, `Membership_Number__c`, computed the same way (deterministic transform), or — if the check-digit algorithm is itself external — a callout to the same legacy service during a transition period |
@@ -109,22 +109,91 @@ COBOL program.
 
 ### Outbound (SMS / Push / Email)
 
-All outbound channels are unified behind `NotificationGatewayService`
-(Deliverable 3), which wraps a single **External Service** definition
-(imported from the notification provider's OpenAPI spec) bound to a
-**Named Credential** (`Notification_Gateway`). This replaces the pattern
-of writing a flat file (`OSMSFILE`, `MD022OP`, `MD572O1`, etc.) for a
-downstream job to pick up — Apex calls the provider synchronously (from
-Batch Apex's `execute()`, which supports callouts when the class
-implements `Database.AllowsCallouts`, or from Queueable Apex).
+> **Correction (post-review)**: an earlier version of this document
+> described this integration as direct outbound callouts from Apex to a
+> notification-provider API (SMS/push/email gateway) via External Services
+> + Named Credential, with "no intermediate file, no separate downstream
+> pickup job." That was wrong. The actual downstream delivery mechanism —
+> for both the legacy COBOL pipeline and its Revenue Cloud replacement — is
+> a **flat-file hand-off via MOVEit** (a managed file transfer / MFT
+> product): Salesforce/Apex produces a file, MOVEit delivers it (PGP-
+> encrypted) to a shared folder, and the actual SMS gateway / push service /
+> EBIZ-EIP email processor picks it up from there, exactly as it picked up
+> `OSMSFILE`, `OUTSMS`, `MD572O1`, etc. in the legacy pipeline. The section
+> below replaces the earlier (incorrect) per-message-callout description.
 
-- **Governor-limit note**: a single Apex transaction is limited to 100
-  callouts. Any batch scope that could produce more than 100
-  SMS+Push+Email sends per `execute()` invocation must either (a) keep
-  batch scope size low enough that per-record callouts stay under 100, or
-  (b) switch to a bulk/batched notification-provider API (one callout per
-  scope, carrying many recipients) if the provider supports it. This is
-  called out again in the class-level comments in `NotificationGatewayService`.
+All outbound channels are unified behind `NotificationGatewayService`
+(Deliverable 3), which now implements a **queue-then-flush** pattern
+mirroring the legacy write-record / close-file pattern:
+
+1. **Queue** — `queueSms()`/`queuePush()`/`queueEmail()` append one row
+   per notification to an in-memory, per-channel buffer (replaces a single
+   `WRITE SMS-RECORD` / `WRITE PUSH-RECORD` / `WRITE EMAIL-RECORD`). No
+   callout happens here.
+2. **Flush** — `flush()`, called exactly **once per batch run** (from
+   Batch Apex's `finish()`, so a multi-scope run still produces one file
+   per channel rather than one per scope; or at the end of a Queueable's
+   single `execute()`), assembles each channel's buffered rows into a file
+   body and uploads it to MOVEit via **one HTTPS callout per channel**,
+   through a Named Credential (replaces `CLOSE OUTPUT-FILE` and the
+   downstream job's file pickup).
+
+Two Apex/Salesforce platform constraints shape this design and must be
+respected, not worked around:
+
+- **Apex has no native OpenPGP/PGP implementation.** `Crypto.encrypt()` /
+  `Crypto.encryptWithManagedIV()` are AES/RSA primitives, not the OpenPGP
+  message container format MOVEit-consuming systems expect. The
+  **recommended default** is that MOVEit Automation (or whichever MOVEit
+  product tier is in use) applies PGP encryption **server-side**, as a
+  workflow step after Salesforce uploads the **plaintext** extract file —
+  this is standard MFT-platform functionality and keeps Apex out of the
+  PGP business entirely. A fallback of pre-encrypting before the file
+  leaves Salesforce (via a middleware hop or an AppExchange PGP package)
+  should be pursued **only if** the business specifically requires
+  encryption-in-transit-from-Salesforce, not as the default.
+- **Apex has no SFTP client** — only HTTP(S) callouts (no raw sockets).
+  The Salesforce → MOVEit handoff must therefore go through a MOVEit
+  REST/HTTPS upload API via Named Credential, never SFTP directly from
+  Apex. **UNRESOLVED**: the exact MOVEit product/API surface in use
+  (MOVEit Transfer's REST "upload file" API vs. a MOVEit Automation task
+  trigger vs. an integration-platform hop that itself speaks SFTP on
+  Salesforce's behalf) has not been confirmed; `NotificationGatewayService`
+  implements a placeholder HTTPS upload shape pending that confirmation —
+  see its class header for details.
+
+**File format**: the legacy programs did not use one consistent flat-file
+format — `MD021EX` wrote comma-delimited CSV (`OUT-FILE`/`MD021OP`),
+`MD134ML` and `MD572EM` wrote semicolon-delimited text (`MD134OP`,
+`MD572O1`), and the `MD022EX`/`MD022ER`/`MD022EC`/`MD022LP`/`md022cc`
+(`OSMSFILE`) and `MD058CB` (`OUTSMS`/`OUTPSH`/`OUTEML`) families wrote
+fixed-width `PIC X(nnn)` records (see each program's `docs/cobol-legacy/
+*.md` for the exact layout). Since the downstream consumer of these files
+is **not** changing, the recommended default is to replicate each legacy
+program's existing record layout rather than invent a new shape; a clean,
+modernized CSV format is a possible future-phase option only once the
+downstream consumer itself is revisited. The current scaffold implements
+only a generic comma/semicolon delimited writer as a placeholder for the
+delimited-format programs (`MD021EX`, `MD134ML`, `MD572EM`); fixed-width
+formatting for the `MD022*`/`MD058CB` families is **not yet implemented**
+and needs a dedicated formatter built from those programs' copybooks
+(`MRD058SF`/`MRD058PF`/`MRD058EF`, etc.) before cutover for those specific
+programs.
+
+- **Governor-limit note (revised)**: the old "100 callouts per
+  transaction" concern from the per-message-callout design no longer
+  applies the same way. Sends are now batched into at most one
+  file-upload callout per channel per run, not one callout per record —
+  so a batch scope of thousands of rows still produces only a handful of
+  callouts total (one per channel actually used, on the single `flush()`
+  call), not one per row. The limits to watch instead are heap size (all
+  of a run's queued rows are held in memory until `flush()`, which is why
+  `MembershipRenewalNotificationBatch` and `EftReconciliationBatch` both
+  hold their `NotificationGatewayService` as `Database.Stateful` state
+  rather than re-creating it per scope) and the per-callout request body
+  size limit (6 MB synchronous / larger via async callouts) if a single
+  day's extract could get large. This is called out again in the
+  class-level comments in `NotificationGatewayService`.
 
 ### Inbound (payment decline / EFT reject)
 
@@ -185,6 +254,31 @@ needing business confirmation rather than being guessed at.
   the Deliverable 3 scaffold must be checked against the org's installed
   Billing package version before implementation. Field names differ
   between Billing releases.
+- **The exact MOVEit API/product surface is unconfirmed.** §4's outbound
+  design assumes an HTTPS "upload file" callout via Named Credential, but
+  whether that is MOVEit Transfer's REST API, a MOVEit Automation task
+  trigger, or an integration-platform (e.g. MuleSoft) hop that itself talks
+  SFTP/MOVEit on Salesforce's behalf has not been confirmed. The Named
+  Credential name, endpoint path, HTTP method, auth scheme, and
+  request/response payload shape in `NotificationGatewayService` are all
+  placeholders pending that confirmation.
+- **The PGP responsibility boundary is assumed, not confirmed.** This
+  design assumes MOVEit Automation applies PGP encryption server-side
+  after Salesforce uploads a plaintext file — Apex has no native OpenPGP
+  implementation and is not expected to produce PGP-encrypted output
+  itself. Confirm this is actually how the target MOVEit environment is
+  configured before relying on it; if Salesforce is required to hand off
+  already-PGP-encrypted content, that requires a different design (a
+  middleware hop or AppExchange PGP package), not currently implemented.
+- **Per-channel/per-program flat-file layout is only partially
+  implemented.** `NotificationGatewayService`'s generic delimited writer
+  covers `MD021EX` (CSV), `MD134ML` and `MD572EM` (semicolon-delimited)
+  as placeholders; it does not implement the fixed-width `PIC X(nnn)`
+  layouts used by the `MD022EX`/`MD022ER`/`MD022EC`/`MD022LP`/`md022cc`
+  and `MD058CB` families. Confirm whether the downstream consumer(s) for
+  those channels still require byte-identical legacy layouts before
+  cutover, and if so, build per-program fixed-width formatters from their
+  copybooks.
 - **Renewal modeling (Order amendment vs. Asset date fields)** is not
   determinable from the COBOL source, which only ever reads/compares term
   expiration dates — it never shows how a renewal is *created*. Confirm

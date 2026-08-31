@@ -17,9 +17,12 @@ public with sharing class MembershipRenewalNotificationScheduler implements Sche
     }
 
     public void execute(SchedulableContext sc) {
-        // Modest default scope size given the External Service callout
-        // limit of 100 per transaction (see NotificationGatewayService
-        // header comment and HLD §4).
+        // Scope size is no longer bounded by a per-record callout limit —
+        // notifications are queued in memory across the whole run and
+        // uploaded to MOVEit as one file per channel in finish() (see
+        // NotificationGatewayService header and HLD §4). 50 is kept as a
+        // conservative default for heap/query-row usage per scope, not as
+        // a callout-limit workaround.
         Database.executeBatch(new MembershipRenewalNotificationBatch(ruleDeveloperName), 50);
     }
 

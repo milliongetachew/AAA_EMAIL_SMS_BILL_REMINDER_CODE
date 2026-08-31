@@ -5,10 +5,16 @@
  *
  * Replaces MD134ML: generates monthly-pay ("MP") bill-plan correspondence
  * emails. The legacy program consumed an upstream "EIP" extract file
- * (MDEIPIN); here the candidate population is passed in directly as Asset
- * Ids by whatever process (Flow, trigger, scheduled batch) detects that an
- * Asset now needs monthly-pay correspondence, since there is no EIP-style
- * intermediate extract file in this architecture.
+ * (MDEIPIN) as its INPUT; here the candidate population is passed in
+ * directly as Asset Ids by whatever process (Flow, trigger, scheduled
+ * batch) detects that an Asset now needs monthly-pay correspondence, since
+ * there is no EIP-style intermediate extract file on the input side of
+ * this architecture. The OUTPUT side, however, still mirrors the legacy
+ * pattern: execute() appends one row per email to an in-memory extract via
+ * NotificationGatewayService.queueEmail() (replacing MD134ML's B1000-
+ * PRODUCE-EMAIL write to EMAIL-FILE-OUT/MD134OP), and flush() at the end
+ * of this same execute() invocation uploads that extract to MOVEit for the
+ * downstream EBIZ/EIP email processor to pick up.
  */
 public with sharing class BillingEmailQueueable implements Queueable, Database.AllowsCallouts {
 
@@ -53,8 +59,8 @@ public with sharing class BillingEmailQueueable implements Queueable, Database.A
         Set<Id> suppressedAssetIds = getWebSelfServiceSuppressedAssets(letter139AssetIds);
 
         CorrespondenceLogger logger = new CorrespondenceLogger();
-        NotificationGatewayService gateway = new NotificationGatewayService();
-        Integer emailsSent = 0;
+        NotificationGatewayService gateway = new NotificationGatewayService('MD134ML');
+        Integer emailsQueued = 0;
 
         for (Asset a : assets) {
             // Replaces B0100-WILL-EMAIL-BE-PRODUCED (stand-in for MD607BR):
@@ -71,29 +77,37 @@ public with sharing class BillingEmailQueueable implements Queueable, Database.A
             }
 
             Map<String, Object> mergeFields = buildEmailPayload(a);
-            NotificationGatewayService.NotificationResult sendResult =
-                    gateway.sendEmail(a.Contact.Email, correspondenceType, mergeFields);
+            NotificationGatewayService.QueueResult queueResult =
+                    gateway.queueEmail(a.Contact.Email, correspondenceType, mergeFields);
 
-            if (sendResult.success) {
-                emailsSent++;
+            if (queueResult.queued) {
+                emailsQueued++;
             }
 
             // MEM-481279: log correspondence history. Per the legacy
             // program's actual behavior (not its ticket description — see
             // HLD §6), only letter 139 is logged; other letter types are
             // not logged here either, preserving that discrepancy rather
-            // than silently "completing" the feature.
+            // than silently "completing" the feature. Status reflects
+            // whether the row was queued into today's extract, not
+            // confirmed delivery — see NotificationGatewayService header.
             if (a.Letter_Code__c == LETTER_139_SUPPRESSION_CODE) {
                 logger.add(a.Id, a.ContactId, CorrespondenceLogger.Channel.EMAIL,
                         LETTER_139_CORRESPONDENCE_TYPE,
-                        sendResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        queueResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         'MD134ML');
             }
         }
 
         logger.flush();
-        System.debug(LoggingLevel.INFO, 'BillingEmailQueueable emailsSent=' + emailsSent
-                + ' of candidates=' + assets.size());
+        // Replaces CLOSE EMAIL-FILE-OUT + the downstream job's pickup:
+        // upload this run's accumulated email extract to MOVEit once, at
+        // the end of this single execute() invocation (Queueable jobs run
+        // once, so there is no cross-scope state to worry about the way
+        // Batch Apex's finish() has to handle).
+        List<NotificationGatewayService.FlushResult> flushResults = gateway.flush();
+        System.debug(LoggingLevel.INFO, 'BillingEmailQueueable emailsQueued=' + emailsQueued
+                + ' of candidates=' + assets.size() + ' filesUploaded=' + flushResults.size());
     }
 
     /**

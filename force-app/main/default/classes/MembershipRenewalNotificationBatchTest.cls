@@ -5,6 +5,11 @@
  * running them (see high-level-design.md §6 on validating blng field
  * names). The `rule` member is set directly via its @TestVisible modifier
  * to avoid depending on a deployed Renewal_Notification_Rule__mdt record.
+ * As of the MOVEit file-handoff correction (see NotificationGatewayService
+ * class header), execute() itself never calls out — only finish()'s
+ * gateway.flush() does — so most of these tests no longer need an
+ * HttpCalloutMock at all; testFinish_uploadsQueuedExtractFile below is the
+ * one that does.
  */
 @isTest
 private class MembershipRenewalNotificationBatchTest {
@@ -83,5 +88,36 @@ private class MembershipRenewalNotificationBatchTest {
         System.assertEquals(1, batchInstance.noCellCount,
                 'A Contact with no MobilePhone must be skipped and counted, matching MD022EX 2010');
         System.assertEquals(0, batchInstance.smsSentCount);
+    }
+
+    @isTest
+    static void testExecute_queuesEligibleSmsRowThenFinishFlushesExtractFile() {
+        // Confirms the queue-then-flush pattern end to end: execute()
+        // appends a row without calling out, and finish() is the one place
+        // that uploads the accumulated extract file to MOVEit (replacing
+        // the legacy CLOSE OUTPUT-FILE + downstream pickup).
+        Test.setMock(HttpCalloutMock.class, new SuccessMock());
+
+        Account acc = new Account(Name = 'Test Household');
+        insert acc;
+        Contact con = new Contact(FirstName = 'Jane', LastName = 'Doe', AccountId = acc.Id, MobilePhone = '5551234567');
+        insert con;
+
+        MembershipRenewalNotificationBatch batchInstance =
+                new MembershipRenewalNotificationBatch('MD022EX');
+        batchInstance.rule = new Renewal_Notification_Rule__mdt(
+                Source_Program__c = 'MD022EX', Requires_No_Payment_In_Transit__c = false,
+                Requires_SMS_Consent__c = false, Requires_Amount_Due_Gt_Zero__c = false);
+        batchInstance.gateway = new NotificationGatewayService('MD022EX');
+
+        Asset a = new Asset(ContactId = con.Id, AccountId = acc.Id);
+
+        Test.startTest();
+        batchInstance.execute(null, new List<Asset>{ a });
+        batchInstance.finish(null);
+        Test.stopTest();
+
+        System.assertEquals(1, batchInstance.smsSentCount,
+                'smsSentCount now reflects rows queued into the extract, not confirmed-delivered messages');
     }
 }

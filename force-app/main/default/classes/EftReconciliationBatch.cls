@@ -17,8 +17,17 @@
  * instead relies on Batch Apex's native per-scope transaction rollback and
  * on Eft_Cau_Reject__c.Processed__c to make reprocessing idempotent and the
  * job safely re-runnable — see HLD §6 for the resulting semantic change.
+ *
+ * OUTPUT side: execute() appends rows to in-memory SMS/Push/Email extracts
+ * via NotificationGatewayService (replacing MD058CB's 1900-CREATE-OUTPUT-
+ * FILES writes to OUTSMS/OUTPSH/OUTEML), and finish() uploads each
+ * channel's accumulated extract to MOVEit exactly once per run. Implements
+ * Database.Stateful so the same NotificationGatewayService instance (and
+ * its buffered rows) survives across every execute() invocation, producing
+ * ONE file per channel per run rather than one per batch scope.
  */
-public with sharing class EftReconciliationBatch implements Database.Batchable<SObject>, Database.AllowsCallouts {
+public with sharing class EftReconciliationBatch implements
+        Database.Batchable<SObject>, Database.AllowsCallouts, Database.Stateful {
 
     // Legacy day-count threshold from MEM-481325 (8250-CHECK-NBR-DAYS-EXPIRE):
     // suppress the printed CAU letter if 23 days or fewer remain to expiration.
@@ -27,6 +36,12 @@ public with sharing class EftReconciliationBatch implements Database.Batchable<S
     // Lodge codes treated as "out of territory" in MC501BCD's response
     // (docs/cobol-legacy/md058cb.md, OUTOF-TERRITORY level-88).
     private static final Set<String> OUT_OF_TERRITORY_LODGE_CODES = new Set<String>{ '1', '3', '4', '6' };
+
+    // Held across execute() invocations (Database.Stateful) so one run
+    // produces one SMS/Push/Email extract file each, not one per scope;
+    // flush()ed once in finish().
+    @TestVisible
+    private NotificationGatewayService gateway = new NotificationGatewayService('MD058CB');
 
     public Database.QueryLocator start(Database.BatchableContext bc) {
         // Replaces reading CAUCCREJ-FILE (DD CAUCCREJ) row by row; the
@@ -59,7 +74,6 @@ public with sharing class EftReconciliationBatch implements Database.Batchable<S
         ]);
 
         CorrespondenceLogger logger = new CorrespondenceLogger();
-        NotificationGatewayService gateway = new NotificationGatewayService();
         List<Eft_Cau_Reject__c> toMarkProcessed = new List<Eft_Cau_Reject__c>();
 
         for (Eft_Cau_Reject__c reject : scope) {
@@ -119,24 +133,24 @@ public with sharing class EftReconciliationBatch implements Database.Batchable<S
             };
 
             if (String.isNotBlank(asset.Contact?.MobilePhone)) {
-                NotificationGatewayService.NotificationResult pushResult =
-                        gateway.sendPush(String.valueOf(asset.Id), 'CAU_REJECT', mergeFields);
+                NotificationGatewayService.QueueResult pushResult =
+                        gateway.queuePush(String.valueOf(asset.Id), 'CAU_REJECT', mergeFields);
                 logger.add(asset.Id, asset.ContactId, CorrespondenceLogger.Channel.PUSH, '868',
-                        pushResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        pushResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         'MD058CB');
 
-                NotificationGatewayService.NotificationResult smsResult =
-                        gateway.sendSms(asset.Contact.MobilePhone, 'CAU_REJECT', mergeFields);
+                NotificationGatewayService.QueueResult smsResult =
+                        gateway.queueSms(asset.Contact.MobilePhone, 'CAU_REJECT', mergeFields);
                 logger.add(asset.Id, asset.ContactId, CorrespondenceLogger.Channel.SMS, '768',
-                        smsResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        smsResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         'MD058CB');
             }
 
             if (String.isNotBlank(asset.Contact?.Email)) {
-                NotificationGatewayService.NotificationResult emailResult =
-                        gateway.sendEmail(asset.Contact.Email, 'CAU_REJECT', mergeFields);
+                NotificationGatewayService.QueueResult emailResult =
+                        gateway.queueEmail(asset.Contact.Email, 'CAU_REJECT', mergeFields);
                 logger.add(asset.Id, asset.ContactId, CorrespondenceLogger.Channel.EMAIL, '668',
-                        emailResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        emailResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         'MD058CB');
             }
 
@@ -150,10 +164,17 @@ public with sharing class EftReconciliationBatch implements Database.Batchable<S
     }
 
     public void finish(Database.BatchableContext bc) {
+        // Replaces CLOSE OUTSMS/OUTPSH/OUTEML + the downstream job's
+        // pickup: upload this run's accumulated SMS/Push/Email extract
+        // file(s) to MOVEit exactly once, after every execute() scope has
+        // run.
+        List<NotificationGatewayService.FlushResult> flushResults = gateway.flush();
+
         // Replaces 2050-EOF-ROUTINE's extensive summary DISPLAY output —
         // see MembershipRenewalNotificationBatch.finish() for the same
         // scaffold placeholder pattern.
-        System.debug(LoggingLevel.INFO, 'EftReconciliationBatch run complete.');
+        System.debug(LoggingLevel.INFO, 'EftReconciliationBatch run complete. filesUploaded='
+                + flushResults.size());
     }
 
     @TestVisible

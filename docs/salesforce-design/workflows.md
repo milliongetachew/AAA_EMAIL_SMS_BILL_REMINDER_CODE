@@ -25,9 +25,9 @@ flowchart TD
     G -->|"Yes, no consent"| SKIP3["Skip SMS leg only\n(replaces WS-NO-CONSENT-COUNT);\nmd022cc rule has this = false"]
     G -->|"No, or consented"| H{"Requires_Amount_Due_Gt_Zero__c\n= true?"}
     H -->|"Yes, amount = 0"| SKIP4["Skip + count\n(replaces WS-NO-AMOUNT-COUNT)"]
-    H -->|"No, or amount &gt; 0"| I["NotificationGatewayService.sendSms() /\n.sendPush()\n(per Requires_Push__c)"]
-    I --> J["CorrespondenceLogger.log()\n(replaces implicit EBIZ pickup;\nadds an audit trail the legacy\nflat files never had)"]
-    C --> K["finish(): summary counts\n(replaces 2050-EOF-ROUTINE displays)"]
+    H -->|"No, or amount &gt; 0"| I["NotificationGatewayService.queueSms() /\n.queuePush()\n(per Requires_Push__c) — appends to\ntoday's in-memory extract, no callout yet"]
+    I --> J["CorrespondenceLogger.log()\n(logged as row queued into the extract,\nnot confirmed delivered)"]
+    C --> K["finish(): summary counts +\nNotificationGatewayService.flush()\n(uploads today's SMS/Push extract file(s)\nto MOVEit for the downstream gateway\nto pick up; replaces 2050-EOF-ROUTINE\ndisplays + CLOSE OUTPUT-FILE)"]
 ```
 
 **Caption**: The legacy programs differ mainly in *which* gates apply and
@@ -50,8 +50,9 @@ flowchart TD
     E -->|"Yes"| F{"isSuppressedBySelfServiceChange(asset)\n— was a matching web-originated\nchange made TODAY?\n(replaces B0200-DO-NOT-SEND-EMAIL /\nINC943560, dept '36'/user '009999')"}
     F -->|"Yes, suppress"| END2["Do not send\n(letter-139 web-suppression rule)"]
     F -->|"No"| G
-    G --> H["NotificationGatewayService.sendEmail()"]
-    H --> I["CorrespondenceLogger.log()\n(type '639' for letter 139,\nreplaces MD300MA / MEM-481279)"]
+    G --> H["NotificationGatewayService.queueEmail()\n(appends to today's in-memory email\nextract, no callout yet)"]
+    H --> I["CorrespondenceLogger.log()\n(type '639' for letter 139,\nreplaces MD300MA / MEM-481279;\nlogged as row queued into the extract,\nnot confirmed delivered)"]
+    I --> J2["End of execute(): flush()\nuploads today's email extract file\nto MOVEit for the downstream EBIZ/EIP\nprocessor to pick up\n(replaces CLOSE EMAIL-FILE-OUT)"]
 ```
 
 **Caption**: The letter-139 web-self-service suppression rule
@@ -92,11 +93,13 @@ sequenceDiagram
         alt no usable email
             H->>CL: log(status=Skipped, reason=NoEmail)
         else usable email
-            H->>NG: sendEmail(declineTemplate, mergeFields)\n(replaces MD572-OUTPUT record write\nto MD572O1)
-            NG-->>H: callout result
-            H->>CL: log(status=Sent, type=CardDecline)
+            H->>NG: queueEmail(declineTemplate, mergeFields)\n(appends to today's in-memory email\nextract — replaces MD572-OUTPUT\nrecord write to MD572O1; no callout yet)
+            NG-->>H: queued
+            H->>CL: log(status=Sent, type=CardDecline)\n(row queued into the extract,\nnot confirmed delivered)
         end
     end
+    H->>NG: flush()\n(end of execute(): uploads today's email\nextract file to MOVEit for the downstream\nEBIZ/EIP processor to pick up;\nreplaces CLOSE EMAIL-FILE-OUT)
+    NG-->>H: upload result
     Note over H,CL: getProcessingDate() (replaces MD930BR)\nis called once at handler start,\nnot shown per-branch above for brevity.
 ```
 
@@ -126,12 +129,13 @@ flowchart TD
     I -->|"No"| K{"Days to expiration &le; 23?\n(replaces 8250-CHECK-NBR-DAYS-EXPIRE,\nUT020DT, MEM-481325)"}
     K -->|"Yes"| L["Suppress printed-letter equivalent\nbut still allow digital notifications\n(DO-NOT-PRINT)"]
     K -->|"No"| M["Digital notifications proceed\nnormally (DO-PRINT)"]
-    L --> N["Generate SMS / Push / Email\n(replaces 1900-CREATE-OUTPUT-FILES,\nMEM-480905)"]
+    L --> N["NotificationGatewayService.queueSms()/\n.queuePush()/.queueEmail()\nper channel — appends to today's\nin-memory extract, no callout yet\n(replaces 1900-CREATE-OUTPUT-FILES,\nMEM-480905)"]
     M --> N
-    N --> O["CorrespondenceLogger.log()\nper channel: types 768/868/668\n(replaces 1970-UPDATE-CORR-HIST /\nMD300MA, MEM-481283)"]
+    N --> O["CorrespondenceLogger.log()\nper channel: types 768/868/668\n(replaces 1970-UPDATE-CORR-HIST /\nMD300MA, MEM-481283; logged as row\nqueued into the extract, not\nconfirmed delivered)"]
     O --> P["Mark Eft_Cau_Reject__c.Processed__c = true"]
     G --> P
     J --> P
+    P --> Q["finish(): NotificationGatewayService.flush()\nuploads today's SMS/Push/Email extract\nfile(s) to MOVEit for the downstream\ngateway(s) to pick up\n(replaces CLOSE OUTSMS/OUTPSH/OUTEML)"]
 ```
 
 **Caption**: The historical "flip household bill plan back to AM and

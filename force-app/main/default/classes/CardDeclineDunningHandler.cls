@@ -13,6 +13,13 @@
  * Each public "get..." method below stands in for one of the legacy
  * program's shared subprogram calls, named to make the mapping explicit
  * for anyone comparing this class against docs/cobol-legacy/md572em.md.
+ *
+ * OUTPUT side: execute() appends one row per decline email to an
+ * in-memory extract via NotificationGatewayService.queueEmail() (replacing
+ * MD572EM's B6000-WRITE-EMAIL-REC write to EMAIL-FILE-OUT/MD572O1), then
+ * flush() at the end of this same execute() invocation uploads that
+ * extract to MOVEit for the downstream EBIZ/EIP email processor to pick
+ * up — no live per-message send happens here.
  */
 public with sharing class CardDeclineDunningHandler implements Queueable, Database.AllowsCallouts {
 
@@ -56,8 +63,8 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
         Map<Id, Decimal> amountDueByAsset = loadAmountDue(assetsByMembershipNumber.values());
 
         CorrespondenceLogger logger = new CorrespondenceLogger();
-        NotificationGatewayService gateway = new NotificationGatewayService();
-        Integer emailedCount = 0, paidCount = 0, skippedCount = 0, noEmailCount = 0;
+        NotificationGatewayService gateway = new NotificationGatewayService('MD572EM');
+        Integer emailQueuedCount = 0, paidCount = 0, skippedCount = 0, noEmailCount = 0;
 
         for (Card_Decline_Event__e e : events) {
             Asset a = assetsByMembershipNumber.get(e.Membership_Number__c);
@@ -106,22 +113,27 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
                 'yearsOfService' => yearsOfService
             };
 
-            NotificationGatewayService.NotificationResult result =
-                    gateway.sendEmail(email, 'CARD_DECLINE', mergeFields);
+            NotificationGatewayService.QueueResult queueResult =
+                    gateway.queueEmail(email, 'CARD_DECLINE', mergeFields);
 
             logger.add(a.Id, a.ContactId, CorrespondenceLogger.Channel.EMAIL, 'CARD_DECLINE',
-                    result.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                    queueResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                     'MD572EM');
 
-            if (result.success) {
-                emailedCount++;
+            if (queueResult.queued) {
+                emailQueuedCount++;
             }
         }
 
         logger.flush();
+        // Replaces CLOSE EMAIL-FILE-OUT + the downstream job's pickup:
+        // upload this run's accumulated decline-email extract to MOVEit
+        // once, at the end of this single execute() invocation.
+        List<NotificationGatewayService.FlushResult> flushResults = gateway.flush();
         System.debug(LoggingLevel.INFO, 'CardDeclineDunningHandler processingDate=' + processingDate
-                + ' emailed=' + emailedCount + ' paid=' + paidCount
-                + ' skipped=' + skippedCount + ' noEmail=' + noEmailCount);
+                + ' emailQueued=' + emailQueuedCount + ' paid=' + paidCount
+                + ' skipped=' + skippedCount + ' noEmail=' + noEmailCount
+                + ' filesUploaded=' + flushResults.size());
     }
 
     /** Stand-in for MD610BR: current total amount due. */

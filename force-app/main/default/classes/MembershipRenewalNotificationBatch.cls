@@ -6,10 +6,15 @@
  * Replaces MD021EX, MD022EX, MD022ER, MD022EC, MD022LP, and md022cc: a
  * single config-driven batch that runs one Renewal_Notification_Rule__mdt
  * at a time (Source_Program__c identifies which legacy program's behavior
- * a given rule reproduces). Implements Database.AllowsCallouts because the
- * notification send happens inline in execute() rather than being staged
- * to a flat file for a separate downstream job to pick up (that separate
- * pickup step no longer exists in this architecture).
+ * a given rule reproduces). Implements Database.AllowsCallouts because
+ * finish() uploads the run's accumulated SMS/Push extract file(s) to
+ * MOVEit (see NotificationGatewayService) — execute() itself only appends
+ * rows in memory and does not call out. Implements Database.Stateful so
+ * the same NotificationGatewayService instance (and its buffered rows)
+ * survives across every execute() invocation in the run, producing ONE
+ * extract file per channel per run instead of one per batch scope — this
+ * mirrors the legacy programs, which held OSMSFILE/OUTSMS etc. open for
+ * the whole run and closed it once at end-of-job.
  */
 public with sharing class MembershipRenewalNotificationBatch implements
         Database.Batchable<SObject>, Database.AllowsCallouts, Database.Stateful {
@@ -23,8 +28,21 @@ public with sharing class MembershipRenewalNotificationBatch implements
     @TestVisible
     private Renewal_Notification_Rule__mdt rule;
 
+    // Default instance lets tests call execute()/finish() directly (as
+    // testFinish_logsSummaryCountersWithoutError does) without requiring
+    // start() to run first; start() replaces this with a
+    // sourceProgram-specific instance once the CMDT rule is resolved.
+    // @TestVisible so tests can queue rows without going through a real
+    // Asset/Contact query.
+    @TestVisible
+    private NotificationGatewayService gateway = new NotificationGatewayService(null);
+
     // Counters mirror the legacy 2050-EOF-ROUTINE / Z0000-EOF-ROUTINE
     // display totals (input, PIT, no-cell, no-consent, no-amount, output).
+    // smsSentCount/pushSentCount now count rows successfully QUEUED into
+    // today's extract file, not confirmed-delivered messages — the legacy
+    // programs counted written output records the same way, with no
+    // delivery confirmation of their own either.
     public Integer inputCount = 0;
     public Integer pitSkipCount = 0;
     public Integer noCellCount = 0;
@@ -48,6 +66,8 @@ public with sharing class MembershipRenewalNotificationBatch implements
             WHERE DeveloperName = :ruleDeveloperName AND Active__c = true
             LIMIT 1
         ];
+
+        gateway = new NotificationGatewayService(rule.Source_Program__c);
 
         Date targetDate = RenewalEligibilityRules.computeTargetDate(System.today(), rule);
 
@@ -87,7 +107,6 @@ public with sharing class MembershipRenewalNotificationBatch implements
         Map<Id, Decimal> amountDueByAsset = loadAmountDue(scope);
 
         CorrespondenceLogger logger = new CorrespondenceLogger();
-        NotificationGatewayService gateway = new NotificationGatewayService();
 
         for (Asset a : scope) {
             Contact c = contactsById.get(a.ContactId);
@@ -127,22 +146,22 @@ public with sharing class MembershipRenewalNotificationBatch implements
             };
 
             if (eligibility.smsEligible) {
-                NotificationGatewayService.NotificationResult smsResult =
-                        gateway.sendSms(c.MobilePhone, rule.Source_Program__c, mergeFields);
+                NotificationGatewayService.QueueResult smsResult =
+                        gateway.queueSms(c.MobilePhone, rule.Source_Program__c, mergeFields);
                 logger.add(a.Id, c.Id, CorrespondenceLogger.Channel.SMS, rule.Source_Program__c,
-                        smsResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        smsResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         rule.Source_Program__c);
-                if (smsResult.success) {
+                if (smsResult.queued) {
                     smsSentCount++;
                 }
             }
             if (eligibility.pushEligible) {
-                NotificationGatewayService.NotificationResult pushResult =
-                        gateway.sendPush(String.valueOf(a.Id), rule.Source_Program__c, mergeFields);
+                NotificationGatewayService.QueueResult pushResult =
+                        gateway.queuePush(String.valueOf(a.Id), rule.Source_Program__c, mergeFields);
                 logger.add(a.Id, c.Id, CorrespondenceLogger.Channel.PUSH, rule.Source_Program__c,
-                        pushResult.success ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
+                        pushResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         rule.Source_Program__c);
-                if (pushResult.success) {
+                if (pushResult.queued) {
                     pushSentCount++;
                 }
             }
@@ -152,10 +171,16 @@ public with sharing class MembershipRenewalNotificationBatch implements
     }
 
     public void finish(Database.BatchableContext bc) {
+        // Replaces CLOSE OUTPUT-FILE + the downstream job's pickup: upload
+        // this run's accumulated SMS/Push extract file(s) to MOVEit exactly
+        // once, after every execute() scope has run.
+        List<NotificationGatewayService.FlushResult> flushResults = gateway.flush();
+
         // Replaces the legacy 2050-EOF-ROUTINE / Z0000-EOF-ROUTINE DISPLAY
         // statements — surfaced here via debug logging as a scaffold
         // placeholder; production implementation should write these counts
-        // to a job-run log record or an AsyncApexJob-linked summary object.
+        // (plus flushResults' file names/row counts/success flags) to a
+        // job-run log record or an AsyncApexJob-linked summary object.
         System.debug(LoggingLevel.INFO, 'MembershipRenewalNotificationBatch[' + rule?.Source_Program__c + ']'
                 + ' input=' + inputCount
                 + ' pitSkip=' + pitSkipCount
@@ -163,7 +188,8 @@ public with sharing class MembershipRenewalNotificationBatch implements
                 + ' noConsent=' + noConsentCount
                 + ' noAmount=' + noAmountCount
                 + ' smsSent=' + smsSentCount
-                + ' pushSent=' + pushSentCount);
+                + ' pushSent=' + pushSentCount
+                + ' filesUploaded=' + flushResults.size());
     }
 
     @TestVisible
