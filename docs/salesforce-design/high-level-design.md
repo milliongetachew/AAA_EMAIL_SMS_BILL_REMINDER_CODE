@@ -1,28 +1,49 @@
 # Revenue Cloud High-Level Design — Membership Renewal / Billing Communication Migration
 
-Target platform: **Salesforce Revenue Cloud** (CPQ managed package `SBQQ`, Billing
-managed package `blng`, plus standard objects `Product2`, `Order`, `OrderItem`,
-`Asset`, `Contract`, `Account`, `Contact`).
+> **Ground truth**: `docs/salesforce-design/data-dictionary-reference.md` is
+> a field-level audit of the actual target org (real automation, real
+> record counts, cross-checked against live flows/Apex) and **supersedes
+> every `blng__`/`SBQQ` field reference in this document and in the
+> Deliverable 3 Apex scaffold**. Read that document first. Where this
+> document still calls something an open question (chiefly: Billing/
+> Payment), that reflects a genuine gap in the audit's scope, not a detail
+> this document is free to invent around.
+
+Target platform: **native Salesforce Revenue Lifecycle Management** —
+standard `Order`/`OrderItem`/`Asset`, assetized via the `revenue_o2aflows`
+managed package's Order-to-Asset flow — plus the standard `Account` object
+used in **Person Account** mode (`IsPersonAccount = true`) for individual
+members. This is confirmed to be **not** the CPQ managed package (`SBQQ`)
+and **not** the Billing managed package (`blng`). An earlier draft of this
+document assumed those packages were in use and modeled members as a
+separate `Contact`; the data-dictionary audit corrected both assumptions,
+and every `blng__`/`SBQQ`/`Contact` reference below has been replaced with
+the real object/field it actually corresponds to, or explicitly flagged as
+an open question where no confirmed replacement exists (principally: no
+Billing/Payment object of any kind appears anywhere in the audited org).
 
 Source system: the 10 IBM Enterprise COBOL batch programs documented in
 `docs/cobol-legacy/` (see that folder's `README.md` for the full program
 inventory and cross-program relationships). This document assumes that
-documentation as ground truth and does not re-derive program behavior from
-source.
+documentation as ground truth for COBOL behavior and does not re-derive
+program behavior from source; it assumes `data-dictionary-reference.md` as
+ground truth for the target org's schema and live automation.
 
 > **Scaffold disclaimer**: Deliverable 3 (`force-app/main/default/classes/`)
 > is a **design scaffold**, not compiled or tested production code. Method
 > signatures, control flow, and inline comments tying logic back to specific
 > COBOL paragraphs are intended to guide a real implementation sprint, not to
-> be deployed as-is. Object/field API names referenced throughout (both
-> standard Billing/CPQ managed-package fields and the custom objects/Custom
-> Metadata Types proposed here) **must be validated against the target org's
-> actual Revenue Cloud edition and configuration** before use — `blng` and
-> `SBQQ` field API names vary meaningfully across package versions, and the
-> custom objects proposed below (`Correspondence__c`, `Eft_Cau_Reject__c`,
+> be deployed as-is. Object/field API names below now reflect the real,
+> field-verified schema in `data-dictionary-reference.md` wherever that
+> document confirms one. The one area it does **not** cover — Billing/
+> Payment (amount due, payment-in-transit, card-decline status) — remains a
+> genuinely open question and is marked as such throughout rather than
+> filled in with a `blng__`-shaped guess. The custom objects/CMDT proposed
+> below (`Correspondence_Log__c`, `Eft_Cau_Reject__c`,
 > `Renewal_Notification_Rule__mdt`, `Card_Decline_Event__e`) do not exist yet
-> and would need to be created via metadata before any of this scaffold could
-> compile.
+> in the org and would need to be created via metadata before any of this
+> scaffold could compile — this is distinct from the fields/objects this
+> document cites from the data dictionary, which **do** already exist.
 
 ## 1. Architecture Overview
 
@@ -35,47 +56,79 @@ service, or EBIZ/EIP email processor. Two programs (`MD058CB`, `MD572EM`)
 additionally drain a DB2 "work table" that an upstream system (EFT,
 Finance) populates as its own hand-off mechanism.
 
-Revenue Cloud replaces each of these DB2 structures with a live,
-transactional object model plus asynchronous Apex in place of nightly JCL:
+Revenue Lifecycle Management replaces each of these DB2 structures with a
+live, transactional object model plus asynchronous Apex in place of nightly
+JCL. Every row below is grounded in `data-dictionary-reference.md`; where
+that document does not cover a legacy concept, this table says so plainly
+instead of inventing a `blng__`/`SBQQ` field to fill the gap.
 
-| Legacy structure | Revenue Cloud replacement |
+| Legacy structure | Revenue Lifecycle Management replacement |
 |---|---|
-| `MBRSHP_HOUSEHOLD` (club + household, bill plan) | `Account` (household) with custom fields for club code and bill-plan type; `blng__BillingAccount__c` for the actual payment/billing relationship |
-| `MBR_INFO` / `MEMBER` (individual member) | `Contact`, related to the household `Account` |
-| `MBR_PRD_DTL` (membership product detail: term dates, bill plan, paid flag) | `Asset` representing the membership subscription, linked to a `Contract` and `Product2` (the membership product); renewal-term/current-term expiration dates become custom date fields on `Asset` |
-| `MBRSHP_NEXT_EVENT` (next billing event code — renewal, late-pay, decline, etc.) | A combination of `blng__Invoice__c` / `blng__Payment__c` status transitions and an `Order`/amendment record for the upcoming renewal; billing-event codes become derived from Billing object status rather than a separate event table |
-| `EMS_WORK_CAU`, `EMS_WORK_LETTER` (legacy letter/print queues) | Replaced by direct, synchronous notification generation (no queue table) triggered by Batch/Queueable Apex, logged to a new `Correspondence__c` object instead of being staged for a separate print/extract job |
-| `EMS_WORK_CCREJ` (Finance-populated credit-card-decline work table) | A `blng__Payment__c` record transitioning to a Declined/Failed status, surfaced via a Platform Event (`Card_Decline_Event__e`) published by middleware or a `blng__Payment__c` trigger |
-| `CAUCCREJ` file (EFT card-auto-update reject feed) | A staging custom object `Eft_Cau_Reject__c`, populated by inbound integration (Platform Event or Apex REST from the EFT/middleware layer), processed by `EftReconciliationBatch` |
+| `MBRSHP_HOUSEHOLD` (club + household, bill plan) | The household is the **Person Account** itself in this org's model (see "Person Account" note below) — `Account.Club_Code__c` (real picklist, authoritative club source) and `Account.Member_Type__c` (household role: Primary/Associate/Dependent/Donor/MSO). No confirmed billing-account/bill-plan object exists at the household level — see "Billing/Payment gap" below. |
+| `MBR_INFO` / `MEMBER` (individual member) | **Person Account** fields directly on `Account` (`PersonEmail`, `PersonMobilePhone`, `PersonHomePhone`, and per-channel deliverability picklists `Email_Status__pc`/`Mobile_Status__pc`/`Home_Phone_Status__pc`) — **not** a separate `Contact`. The household is modeled through `AccountContactRelation`, not a Contact-to-Account child relationship. |
+| `MBR_PRD_DTL` (membership product detail: term dates, bill plan, paid flag) | `Asset` (the membership subscription), assetized from `Order`/`OrderItem` by the platform-internal `revenue_o2aflows__o2aFlow` (async, after-commit, on Order Activation). Real fields: `Asset.Member_Number__c` (on the `ProductCode='60'` parent asset — **53% blank, verified**), `Asset.Bill_Plan__c` (formula, derives a code like `AC` from `Billing_Frequency__c`+`Payment_Method__c`+`Autopay__c`), `Asset.CurrentLifecycleEndDate`/`LifecycleEndDate` (standard, platform-set — the closest available stand-in for "current term expiration"/"renewal term expiration"; exact semantic parity with those two legacy fields is **not confirmed**, flagged in §6). `Asset.Status` is **null on 97% of Assets, verified** — do not gate eligibility on it. |
+| `MBRSHP_NEXT_EVENT` (next billing event code — renewal, late-pay, decline, etc.) | **No confirmed replacement.** None of the 7 audited objects contains a billing-event/next-event field. This billing-event taxonomy (`'75'` = CC decline, `'04'/'40'/'41'/'55'-'59'` = late-pay states) remains fully unresolved — see "Billing/Payment gap" below. |
+| `EMS_WORK_CAU`, `EMS_WORK_LETTER` (legacy letter/print queues) | Direct, synchronous notification generation (no queue table) triggered by Batch/Queueable Apex, recorded via **two complementary signals** (deliberate choice, not a default — see §6): (1) `Asset.Correspondence__c`, the **existing** 216-value multipicklist already used in this org for exactly this purpose (correspondence codes accompanying cards/bills), updated as a lightweight, at-a-glance signal; and (2) a **new** custom object `Correspondence_Log__c` (deliberately *not* named `Correspondence__c`, to avoid colliding in name with the existing Asset field) providing full timestamped audit history — something a multipicklist cannot represent. |
+| `EMS_WORK_CCREJ` (Finance-populated credit-card-decline work table) | **Partially unresolved.** A Platform Event (`Card_Decline_Event__e`) published by middleware or a payment-gateway webhook relay is still the recommended shape, but its trigger condition ("a payment record transitions to Declined/Failed") assumed a `blng__Payment__c`-style object the data dictionary does not confirm exists — see "Billing/Payment gap" below. |
+| `CAUCCREJ` file (EFT card-auto-update reject feed) | A staging custom object `Eft_Cau_Reject__c`, populated by inbound integration (Platform Event or Apex REST from the EFT/middleware layer), processed by `EftReconciliationBatch`. Not covered by the data-dictionary audit's 7 object sheets, so this remains a net-new proposal rather than a real-org confirmation. |
 | Flat-file SMS/Push/Email extracts (`OSMSFILE`, `OPSHFILE`, `MD134OP`, `MD572O1`, `OUTSMS`/`OUTPSH`/`OUTEML`) | **Corrected** (see §4 changelog note): the same flat-file hand-off pattern, not a live provider API. Apex accumulates one row per notification in memory over the run, then uploads one file per channel per run to **MOVEit** (managed file transfer) via HTTPS/Named Credential, landing in a shared folder in `.txt` or `.csv` format (varies by legacy program — see §4) for the same downstream SMS gateway / push service / EBIZ-EIP email processor to pick up, exactly as it did with `OSMSFILE`/`OUTSMS`/etc. MOVEit Automation is expected to apply PGP encryption server-side after upload; Apex does not do PGP |
 | JCL scheduling / SYSIN parameters (interval days, club lists) | `Schedulable` Apex + Custom Metadata Type records (`Renewal_Notification_Rule__mdt`) — parameters become declarative, editable-without-deployment configuration, matching the spirit of the COBOL programs that already externalized some of this to `MD699BR` business rules |
 | `MD930BR` (get processing date) | `System.today()` / `Datetime.now()` — no subroutine call needed |
-| `MD999CK` (club+member → 16-digit check-digit membership number) | A formula field or invocable Apex utility on `Asset`, `Membership_Number__c`, computed the same way (deterministic transform), or — if the check-digit algorithm is itself external — a callout to the same legacy service during a transition period |
-| `MC501BCD`/`MC502BCD` (customer name/email/phone lookup) | Native `Contact` fields (`FirstName`, `Email`, `MobilePhone`) — no lookup subroutine needed once data lives natively in Salesforce |
-| `MC556BR` (SMS consent check) | A `Contact` consent field (`SMS_Opt_In__c`) or, if the org has one, Salesforce's native consent-management data model |
-| `FN435BT` (payment-in-transit check) | A query against `blng__Payment__c` for records in a "Processing"/"Pending" status against the member's `blng__BillingAccount__c` |
-| `MD610BR` (amount currently due) | `blng__Invoice__c.blng__Balance__c` (or an aggregated balance across open invoices) on the `blng__BillingAccount__c` |
+| `MD999CK` (club+member → check-digit membership number) | **Already solved in the target org — not a design gap.** The Apex class `RVNMembershipNo`, invoked from the Asset-side `Generate_Membership_Number` flow (after-save Create+Update, entry criterion `ProductCode='60' AND Member_Number__c blank AND AccountId not null`), populates `Asset.Member_Number__c` and `Account.Member_Number__c`. The remaining work is a **data-quality backfill**, not an algorithm to reproduce: **21 of 40 Membership assets (53%) are still blank, verified.** |
+| `MC501BCD`/`MC502BCD` (customer name/email/phone lookup) | Native **Person Account** fields (`FirstName`, `LastName`, `PersonEmail`, `PersonMobilePhone`) — no lookup subroutine needed. Use `Email_Status__pc`/`Mobile_Status__pc` (Valid/Invalid/Transactional Call Only/Declined) as the deliverability gate instead of a null check — a materially better signal than the legacy validity-code check it replaces. |
+| `MC556BR` (SMS consent check) | `Account.Consent_for_SMS__c` (real, confirmed boolean field) — checked directly on the Person Account, since the member **is** the Account in this org's model. |
+| `FN435BT` (payment-in-transit check) | **Unresolved.** No Billing/Payment object exists anywhere in the data dictionary audit — see "Billing/Payment gap" below. This needs its own investigation, not a `blng__Payment__c` guess. |
+| `MD610BR` (amount currently due) | **Unresolved**, same "Billing/Payment gap" as `FN435BT` above. |
 | `MD699BR` (club business rules: day offsets, exclusions, club abbreviations) | `Renewal_Notification_Rule__mdt` (see §3) |
 | `MD607BR` (letter/correspondence-type decision for billing emails) | Folded into `Renewal_Notification_Rule__mdt` / a small rules helper in `BillingEmailQueueable`, since the underlying decision table was not part of the reviewed source and cannot be reproduced exactly |
-| `MD300MA` (correspondence-history logging) | `CorrespondenceLogger` Apex class writing to `Correspondence__c` |
+| `MD300MA` (correspondence-history logging) | `CorrespondenceLogger` Apex class, writing to **both** `Correspondence_Log__c` (new object, full audit trail) and `Asset.Correspondence__c` (existing multipicklist, lightweight signal) — see the correspondence-log row above and §6. |
+| `MD022EC`'s hard-coded campaign-code whitelist | The **real** `Campaign_Code__c`/`Campaign_Action__c` objects (already exist — `Club_Code__c`, `Status__c`, `Effective_Date__c`/`Expiration_Date__c`, `Pricing_Type__c`, `AutoPay_Required__c`, etc.), queried directly instead of a CMDT-only whitelist. **Important**: these objects currently have **zero automation** — nothing in the org enforces them today, so this migration is the **first** thing to actually enforce campaign eligibility at the platform level, not a replication of an existing enforcement mechanism. See §2 and §6. |
+
+### Billing/Payment gap (applies to several rows above)
+
+None of the 7 objects in `data-dictionary-reference.md` (`Order`,
+`OrderItem`, `Asset`, `Account`, `Person Account`, `Campaign_Code__c`,
+`Campaign_Action__c`) is an Invoice, Payment, or Billing Account/Treatment
+object. This is a **genuine open question**, not a naming detail:
+`FN435BT` (payment-in-transit), `MD610BR` (amount due), and the
+`EMS_WORK_CCREJ`/card-decline billing-status trigger all depend on a
+billing/payment data source this audit did not cover. Do not assume
+`blng__` objects exist in this org just because the audit didn't rule them
+out — the Deliverable 3 scaffold keeps its `blng__Payment__c`/
+`blng__Invoice__c` references exactly as illustrative placeholders
+(unchanged, not re-guessed with different field names) pending a separate
+investigation into whether Salesforce Billing — or some other billing
+system entirely — is actually in use.
+
+### Person Account model (applies throughout)
+
+The member is a **Person Account** (`Account` with `IsPersonAccount =
+true`), not a Contact related to a business Account. Every `Contact`
+reference in an earlier draft of this document and the Deliverable 3
+scaffold (`Contact.Email`, `Contact.MobilePhone`, `Contact.SMS_Opt_In__c`,
+`Asset.ContactId`, etc.) is corrected below to the real relationship:
+`Asset.AccountId` points directly at the Person Account — there is no
+separate Contact lookup on `Asset` the way a business-Account/Contact
+scaffold would assume.
 
 ## 2. Object Model Mapping Table
 
-| Legacy concept (COBOL program / DB2 table) | Revenue Cloud object | Notes |
+| Legacy concept (COBOL program / DB2 table) | Real Salesforce object/field | Notes |
 |---|---|---|
-| Household / club (`MBRSHP_HOUSEHOLD`) | `Account` (Household) | Club code becomes a custom field `Club_Code__c` on `Account`; may also map to a `blng__BillingAccount__c` for payment terms |
-| Member (`MBR_INFO`/`MEMBER`) | `Contact` | Role `'00'` (primary), used as the filter in nearly every cursor in the legacy set, maps to the Contact being the `AccountContactRelation` primary / the Asset's `Contact` lookup |
-| Membership (`MBR_PRD_DTL`) | `Asset` under a `Contract`, linked to `Product2` (the membership product) | `Asset.Membership_Number__c`, `Asset.Bill_Plan_Type__c` (AC/AM/MP), `Asset.Current_Term_Expiration_Date__c`, `Asset.Renewal_Term_Expiration_Date__c` |
-| Renewal (implicit: `CUR_TERM_EXP_D < REN_TERM_EXP_D`) | Asset renewal — either an `Order` amendment against the `Asset`'s `Contract` (CPQ renewal opportunity/quote) or simply the Asset's own renewal-term date fields, depending on whether the org models renewals as new Orders | Flagged for validation: whether renewals are modeled as Order amendments (full CPQ renewal process) or just date-field updates on the Asset depends on org configuration not visible from the COBOL source |
-| Bill Plan (`FK_BILL_PLAN_TYP_C` = AC/AM/MP) | `blng__PaymentMethod__c` type + `blng__BillingAccount__c` billing preferences | AC (autopay) → an active default `blng__PaymentMethod__c` of type Card/ACH; AM (manual) → no default payment method / invoice-pay; MP (monthly pay) → `blng__BillingAccount__c` billing frequency = Monthly |
-| Next billing event (`MBRSHP_NEXT_EVENT.FK_MBR_BILL_EVENT`) | Derived from `blng__Invoice__c`/`blng__Payment__c` status + a computed "next event" indicator, OR a lightweight custom field `Asset.Next_Bill_Event_Code__c` maintained by a Billing-side trigger/flow if Billing's native statuses don't cleanly cover every legacy event code (e.g. `'75'` = CC decline, `'04'/'40'/'41'/'55'-'59'` = various late-pay states) | The legacy event-code taxonomy is finer-grained than Billing's native payment/invoice status model; a mapping table (part of `Renewal_Notification_Rule__mdt`, see §3) is needed to translate |
-| Campaign code eligibility (`MD022EC`'s whitelist) | Custom Metadata Type driving eligibility criteria — see `Renewal_Notification_Rule__mdt` (§3); campaign code itself could live as `Asset.Campaign_Code__c` or come from a Marketing Cloud/Campaign Member relationship | The legacy whitelist was hard-coded and extended club-by-club over 18 months; CMDT records replace this without requiring a deployment per new campaign code |
-| Correspondence log (`MD300MA` / `EMS_WORK_CAU` / `EMS_WORK_LETTER`) | New custom object `Correspondence__c`, related to `Asset` and `Contact` | Fields: `Related_Asset__c`, `Related_Contact__c`, `Channel__c` (SMS/Push/Email/Letter), `Correspondence_Type_Code__c` (preserves legacy codes like `'639'`, `'868'`, `'768'`, `'668'`, `'168'` for audit traceability), `Status__c`, `Sent_Date__c`, `Source_Program__c`, `Error_Message__c` |
-| Payment-in-transit (`FN435BT`) | `blng__Payment__c` query, status = Processing/Pending, against the member's `blng__BillingAccount__c` | Field name for "in transit"/processing status must be validated against the installed `blng` package version |
-| SMS/text consent (`MC556BR`) | `Contact.SMS_Opt_In__c` (custom checkbox) or native consent object if the org has Consent Management enabled | |
-| EFT CAU reject file (`MD058CB` input) | `Eft_Cau_Reject__c` (new custom object, staging records from inbound integration) | Replaces the `CAUCCREJ` flat file; see §3 |
-| Credit-card decline event (`MD572EM`'s `EMS_WORK_CCREJ`) | `Card_Decline_Event__e` (Platform Event) published when `blng__Payment__c.blng__Status__c` transitions to Declined/Failed | Replaces Finance's manual population of the DB2 work table with a real-time event |
-| 16-digit check-digit membership number (`MD999CK`) | `Asset.Membership_Number__c` (formula or Apex-computed at Asset creation) | The check-digit algorithm itself was not part of the reviewed COBOL source (`MD999CK` is called, not defined, in every program) — must be sourced separately before this can be reproduced exactly in Apex |
+| Household / club (`MBRSHP_HOUSEHOLD`) | `Account` (Person Account) | `Account.Club_Code__c` (real picklist, 9 values — the authoritative club source; read-only, nothing writes it via automation). No confirmed billing-account object for payment terms — see §1 "Billing/Payment gap". |
+| Member (`MBR_INFO`/`MEMBER`) | The **Person Account itself** (`IsPersonAccount = true`), not a Contact | Role `'00'` (primary), used as the filter in nearly every cursor in the legacy set, maps to `Account.Member_Type__c = 'Primary Member'`, enforced by `RTF_Validate_Primary_Member_on_Account` (one Primary Member per household, validation-only). The household is modeled via `AccountContactRelation`, not a Contact-to-Account child relationship. |
+| Membership (`MBR_PRD_DTL`) | `Asset`, assetized from `Order`/`OrderItem` by `revenue_o2aflows__o2aFlow` | `Asset.Member_Number__c` (53% blank, verified — see §1), `Asset.Bill_Plan__c` (formula, e.g. `AC`), `Asset.CurrentLifecycleEndDate`/`LifecycleEndDate` (standard, platform-set — best available stand-in for the two legacy term-expiration dates; exact semantic match **not confirmed**, see §6). `Asset.ProductCode = '60'` identifies the Membership parent asset (`CurrentQuantity = 0`, a container); `'01'`/`'80'` are seen on component assets holding `CurrentQuantity = 1`. |
+| Renewal (implicit: `CUR_TERM_EXP_D < REN_TERM_EXP_D`) | Not determinable from the data dictionary either — `OriginalActionType` (Add/Amend/Cancel/No Change/Renew/Transfer) is stamped by Revenue Cloud's `initiateAmendment`/`initiateRenewal` invocable Apex from the Amend-Renew-and-Cancel screen flow, suggesting renewals **are** modeled as Order amendments, but this needs explicit business confirmation before `Asset` vs. `Order` responsibility boundaries are finalized (see §6). |
+| Bill Plan (`FK_BILL_PLAN_TYP_C` = AC/AM/MP) | `Asset.Bill_Plan__c` (real formula field), derived from `Billing_Frequency__c` + `Payment_Method__c` + `Autopay__c` | Always current (it's a formula), unlike the legacy stored code. No confirmed default-payment-method or billing-account object exists to represent "AM = invoice-pay" — see §1 "Billing/Payment gap". |
+| Next billing event (`MBRSHP_NEXT_EVENT.FK_MBR_BILL_EVENT`) | **No confirmed replacement** — none of the 7 audited objects has a next-event/billing-event field | The legacy event-code taxonomy (`'75'` CC decline, `'04'/'40'/'41'/'55'-'59'` late-pay states) has no home in this org's confirmed schema; `Billing_Event_Codes__c` on `Renewal_Notification_Rule__mdt` (§3) remains a placeholder pending a real billing/payment data source. |
+| Campaign code eligibility (`MD022EC`'s whitelist) | The **real** `Campaign_Code__c` object — `Club_Code__c`, `Status__c` (Active/Draft/Rejected/Scheduled/Retired), `Effective_Date__c`/`Expiration_Date__c`, `Pricing_Type__c`, `AutoPay_Required__c`, `Billing_Type__c`, `Code_Category__c` — plus its master-detail child `Campaign_Action__c` for discount mechanics | This object already exists and matches `MD022EC`'s intent closely, but has **zero automation today** (no flow, trigger, or validation rule) — it's hand-maintained reference data, not currently enforced anywhere. This migration is the first thing to actually enforce it. `OrderItem.Campaign_Code_Applied__c` stores the code's **name** (e.g. `PO65%`), not its Id — matches `Campaign_Code__c.Campaign_Code_Name__c`. **Gap**: `Asset` does not carry a campaign-code identifier field forward from the Order, so resolving "which campaign code applies to this member's renewal" from the Asset alone is not currently possible — see §6. |
+| Correspondence log (`MD300MA` / `EMS_WORK_CAU` / `EMS_WORK_LETTER`) | **Two signals, deliberately used together** — see §6 for why this is not a single-answer choice | (1) `Asset.Correspondence__c` — **existing** 216-value multipicklist already used for this exact purpose in this org; codes get added as a lightweight, queryable-on-the-record signal, preserving legacy codes like `'639'`, `'868'`, `'768'`, `'668'`, `'168'`. (2) New object `Correspondence_Log__c` (named to avoid colliding with the existing `Asset.Correspondence__c` field) with `Related_Asset__c`, `Related_Account__c` (Person Account lookup — named `Related_Account__c`, not `Related_Contact__c`, since the member is an Account, not a Contact, in this org's model), `Channel__c`, `Correspondence_Type_Code__c`, `Status__c`, `Sent_Date__c`, `Source_Program__c`, `Error_Message__c` — full timestamped audit history, which the multipicklist structurally cannot provide. |
+| Payment-in-transit (`FN435BT`) | **Unresolved** — no Billing/Payment object in the data dictionary | See §1 "Billing/Payment gap"; the scaffold's `blng__Payment__c` reference is left as an unchanged, explicitly-flagged placeholder, not replaced with a different guess. |
+| SMS/text consent (`MC556BR`) | `Account.Consent_for_SMS__c` (real, confirmed boolean field) | Checked on the Person Account directly. For email suppression specifically, prefer the standard `PersonHasOptedOutOfEmail` over any custom consent field. |
+| EFT CAU reject file (`MD058CB` input) | `Eft_Cau_Reject__c` (new custom object, staging records from inbound integration) | Replaces the `CAUCCREJ` flat file; see §3. Not covered by the data-dictionary audit, so remains a net-new proposal. |
+| Credit-card decline event (`MD572EM`'s `EMS_WORK_CCREJ`) | `Card_Decline_Event__e` (Platform Event), intended to be published when a payment record transitions to Declined/Failed | The triggering payment-status object is unconfirmed — see §1 "Billing/Payment gap". Replaces Finance's manual population of the DB2 work table with a real-time event once that gap is resolved. |
+| Out-of-territory member (`MD058CB`'s lodge-code check, `8600-GET-LODGE-TYPE`) | `Account.Out_Of_Territory__c` (real, confirmed boolean field) | Replaces any guessed lodge-code equivalent — this is the actual field the business uses for this branch today. |
+| Check-digit membership number (`MD999CK`) | `Asset.Member_Number__c` / `Account.Member_Number__c`, populated by the real Apex `RVNMembershipNo` via the `Generate_Membership_Number` flow | **Solved, not a design gap** — see §1. Remaining work is backfilling the 53%/47%-blank population, not reproducing an algorithm. |
 
 ## 3. Custom Metadata Type: `Renewal_Notification_Rule__mdt`
 
@@ -93,13 +146,13 @@ COBOL program.
 | `Source_Program__c` | Text | Traceability label, e.g. `'MD021EX'`, `'MD022EC'` | n/a (new) |
 | `Active__c` | Checkbox | Enable/disable a rule without deployment | n/a (new) |
 | `Club_Code__c` | Text (semicolon-delimited, blank = all clubs) | Club scoping | `MD022EC`'s club whitelist; `MD021EX`/`MD022EX` implicitly all clubs |
-| `Campaign_Codes__c` | Text (semicolon-delimited, blank = no restriction) | Marketing campaign-code whitelist | `MD022EC`'s growing `9000068`…`9000088` list |
-| `Billing_Event_Codes__c` | Text (semicolon-delimited) | Qualifying `FK_MBR_BILL_EVENT`-equivalent codes | `MD022EC`/`MD022LP` (`'04','40','41','55'-'59'`), `md022cc` (`'75'`) |
-| `Exclude_Bill_Plan_Types__c` | Text (comma-delimited) | Bill-plan exclusions | `MD022EC`/`MD022LP` exclude `'AC','AH'` |
-| `Exclude_Bill_Cycles__c` | Text (comma-delimited) | Bill-cycle exclusions | `MD022EC`/`MD022LP` exclude `'IM','MA','NB'` |
+| `Campaign_Codes__c` | Text (semicolon-delimited, blank = no restriction) | **Supplementary** rule-level campaign-code restriction, layered on top of (not a replacement for) the real `Campaign_Code__c` object query described in §1/§2 — use this field only for a rule-specific narrowing (e.g. "this particular legacy program only ever fired for these codes"), not as the source of truth for whether a code is currently active/eligible | `MD022EC`'s growing `9000068`…`9000088` list |
+| `Billing_Event_Codes__c` | Text (semicolon-delimited) | Qualifying `FK_MBR_BILL_EVENT`-equivalent codes | `MD022EC`/`MD022LP` (`'04','40','41','55'-'59'`), `md022cc` (`'75'`) — **doubly unresolved**: the data dictionary confirms no Billing/Payment object exists in this org at all, so there is no field to source these event codes from today, not just an unconfirmed field name (see §1 "Billing/Payment gap") |
+| `Exclude_Bill_Plan_Types__c` | Text (comma-delimited) | Bill-plan exclusions | `MD022EC`/`MD022LP` exclude `'AC','AH'` — evaluated against `Asset.Bill_Plan__c` (real formula field, replaces the placeholder `Bill_Plan_Type__c`) |
+| `Exclude_Bill_Cycles__c` | Text (comma-delimited) | Bill-cycle exclusions | `MD022EC`/`MD022LP` exclude `'IM','MA','NB'` — no confirmed "bill cycle" field exists on `Asset` in the data dictionary; remains unresolved alongside the Billing/Payment gap |
 | `Day_Offset__c` | Number | Days added/subtracted for target-date computation | `WS-SMS-DAYS` (`MD022EX`, via `MD699BR`), `WS-INTERVAL-DAYS` (`MD022EC`/`MD022LP`/`md022cc`, via SYSIN), hard-coded `13` in `MD021EX` |
 | `Date_Formula__c` | Picklist: `SIMPLE_OFFSET`, `OFFSET_PLUS_ONE_YEAR`, `FIXED_MINUS_77` | Which of the (at least) three distinct date-math patterns found in the source to apply | `SIMPLE_OFFSET` = `MD021EX`/`MD022EX`/`MD022ER` (`proc date + N days`); `OFFSET_PLUS_ONE_YEAR` = `MD022EC`/`MD022LP`/`md022cc`'s unusual `(proc date − N days) + 1 year` formula (preserved faithfully — see Ambiguity note below); `FIXED_MINUS_77` = `MD022ZA`'s upstream "-77 day" window (that program did no date math of its own — flagged as not fully portable, see §6) |
-| `Requires_SMS_Consent__c` | Checkbox | Whether SMS channel requires `Contact.SMS_Opt_In__c = true` | `MD021EX`/`MD022EX`/`MD022EC`/`MD022LP`/`MD022ZA` = true; `md022cc` = **false** (consent check explicitly removed, MEM-482325 — preserve this distinction deliberately, do not default it to true) |
+| `Requires_SMS_Consent__c` | Checkbox | Whether SMS channel requires `Account.Consent_for_SMS__c = true` (the Person Account, real confirmed field — replaces the placeholder `Contact.SMS_Opt_In__c`) | `MD021EX`/`MD022EX`/`MD022EC`/`MD022LP`/`MD022ZA` = true; `md022cc` = **false** (consent check explicitly removed, MEM-482325 — preserve this distinction deliberately, do not default it to true) |
 | `Requires_Push__c` | Checkbox | Whether this rule also produces a Push notification | `MD022ER`/`MD022LP`/`md022cc`/`MD022ZA` = true (Push always independent of SMS consent); `MD021EX`/`MD022EX`/`MD022EC` = false (no Push channel) |
 | `Requires_Amount_Due_Gt_Zero__c` | Checkbox | Whether a nonzero amount due is required before sending | `MD022EX`/`MD022ER` = true (`MD610BR` gate); `MD022EC`/`MD022LP`/`md022cc`/`MD022ZA` = false (no `MD610BR` call in source) |
 | `Requires_No_Payment_In_Transit__c` | Checkbox | Whether a pending payment suppresses the send | `MD021EX`/`MD022EX` = true; `MD022ER` = **computed but not enforced in source** (flagged ambiguity, preserved as a togglable field rather than silently "fixed"); `MD022EC`/`MD022LP`/`md022cc`/`MD022ZA` = not present in source at all |
@@ -198,10 +251,13 @@ programs.
 ### Inbound (payment decline / EFT reject)
 
 - **Card decline** (replaces `EMS_WORK_CCREJ`, `MD572EM`'s input):
-  modeled as a Platform Event, `Card_Decline_Event__e`, published either
-  by a trigger on `blng__Payment__c` when its status transitions to
-  Declined/Failed, or by middleware relaying the payment gateway's
-  webhook directly. `CardDeclineDunningHandler` subscribes (via a
+  modeled as a Platform Event, `Card_Decline_Event__e`. The originally
+  proposed trigger condition — "a trigger on `blng__Payment__c` when its
+  status transitions to Declined/Failed" — depends on a Billing/Payment
+  object the data dictionary does not confirm exists in this org (see §1
+  "Billing/Payment gap"); until that is resolved, publishing via
+  middleware relaying the payment gateway's webhook directly is the only
+  confirmed-feasible path. `CardDeclineDunningHandler` subscribes (via a
   Platform Event trigger, not included in this classes-only scaffold —
   see Deliverable 3 note) and processes events asynchronously.
 - **EFT CAU reject** (replaces the `CAUCCREJ` file, `MD058CB`'s input):
@@ -224,7 +280,7 @@ programs.
 | `CardDeclineDunningHandler` | Queueable-based Platform Event handler | `MD572EM`, calling out to helper methods standing in for `MC501BCD`, `MD999CK`, `MD380MA`, `MD642BR`, `MD699BR`, `MD930BR` |
 | `EftReconciliationBatch` | `Database.Batchable<SObject>`, `Database.AllowsCallouts` | `MD058CB`'s core bill-plan reconciliation loop and its 2025 SMS/Push/Email notification behavior |
 | `NotificationGatewayService` | Helper (no interface) | Stand-in for all downstream file-consumer systems (SMS gateway, push service, EBIZ/EIP email processor) — used by every class above |
-| `CorrespondenceLogger` | Helper (no interface) | `MD300MA`, and functionally replaces `EMS_WORK_CAU`/`EMS_WORK_LETTER` as the system-of-record for "what was sent to whom" |
+| `CorrespondenceLogger` | Helper (no interface) | `MD300MA`, and functionally replaces `EMS_WORK_CAU`/`EMS_WORK_LETTER` as the system-of-record for "what was sent to whom" — writes to **both** the new `Correspondence_Log__c` object (audit trail) and the existing `Asset.Correspondence__c` multipicklist (lightweight signal); see §1/§2 |
 | `MembershipRenewalNotificationBatchTest` | `@isTest` | Tests for `MembershipRenewalNotificationBatch` |
 | `MembershipRenewalNotificationSchedulerTest` | `@isTest` | Tests for `MembershipRenewalNotificationScheduler` |
 | `RenewalEligibilityRulesTest` | `@isTest` | Tests for `RenewalEligibilityRules` |
@@ -242,18 +298,74 @@ set). Its Revenue Cloud equivalent is a `Renewal_Notification_Rule__mdt`
 record (`Date_Formula__c = 'FIXED_MINUS_77'`) processed by the same
 `MembershipRenewalNotificationBatch`, once the "-77 days before
 expiration" eligibility window is confirmed and expressed as a SOQL
-filter on `Asset.Current_Term_Expiration_Date__c` — flagged in §6 as
-needing business confirmation rather than being guessed at.
+filter on `Asset.CurrentLifecycleEndDate` (or `LifecycleEndDate` — which
+of the two standard fields corresponds to "current term expiration" is
+itself unconfirmed, see §6) — flagged in §6 as needing business
+confirmation rather than being guessed at.
 
 ## 6. Explicit Flags for Validation
 
-- **`blng`/`SBQQ` field API names are illustrative, not confirmed.** Every
-  reference to `blng__BillingAccount__c`, `blng__Payment__c`,
-  `blng__Invoice__c`, `blng__PaymentMethod__c`, and their fields
-  (`blng__Status__c`, `blng__Balance__c`, etc.) in this document and in
-  the Deliverable 3 scaffold must be checked against the org's installed
-  Billing package version before implementation. Field names differ
-  between Billing releases.
+- **No Billing/Payment object exists anywhere in the field-verified data
+  dictionary — this is a confirmed gap, not an unconfirmed field name.**
+  The org uses native Revenue Lifecycle Management, not the `blng` managed
+  package; none of the 7 audited objects (`Order`, `OrderItem`, `Asset`,
+  `Account`, `Person Account`, `Campaign_Code__c`, `Campaign_Action__c`) is
+  an Invoice, Payment, or Billing Account/Treatment object. Every
+  `blng__BillingAccount__c`, `blng__Payment__c`, `blng__Invoice__c`,
+  `blng__PaymentMethod__c` reference remaining in the Deliverable 3
+  scaffold (`loadPaymentsInTransit`/`loadAmountDue` in
+  `MembershipRenewalNotificationBatch` and `CardDeclineDunningHandler`) is
+  left as an explicitly-flagged, unchanged placeholder — **do not** treat
+  the absence of a ruled-out `blng__` reference as evidence Billing is
+  installed, and do not replace these placeholders with a different set of
+  guessed field names. `MD610BR` (amount due) and `FN435BT`
+  (payment-in-transit) require a separate investigation into what billing/
+  payment system (if any) actually backs this org before they can be
+  implemented for real.
+- **Person Account correction.** An earlier draft of this document and the
+  Deliverable 3 scaffold modeled the member as a `Contact` related to a
+  business `Account`, including `Asset.ContactId`. The data dictionary
+  confirms members are **Person Accounts** (`Account.IsPersonAccount =
+  true`); there is no `Asset.ContactId` the way a Contact-based scaffold
+  assumes — `Asset.AccountId` points directly at the Person Account.
+  `PersonEmail`/`PersonMobilePhone`/`PersonHomePhone` and the deliverability
+  picklists `Email_Status__pc`/`Mobile_Status__pc`/`Home_Phone_Status__pc`
+  replace every `Contact.Email`/`Contact.MobilePhone` reference. This has
+  been corrected throughout Deliverable 3 (see class-level comments there)
+  — flagged here as the single most consequential correction in this
+  document, since it changes SOQL relationship paths, not just field names.
+- **`Campaign_Code__c`/`Campaign_Action__c` have zero automation today —
+  this migration is the first enforcement point.** These real objects
+  exist and are hand-maintained (25 current codes, all `Status__c =
+  'Active'`), but nothing in the org today — no flow, trigger, or
+  validation rule — actually applies their discount/eligibility rules to
+  an order or renewal. Treat `RenewalEligibilityRules`'s campaign-code gate
+  as introducing new, real enforcement, not replicating existing behavior;
+  confirm with the business that this is an intended, not accidental,
+  behavior change. Separately, **`Asset` does not carry a campaign-code
+  identifier field forward from the originating `Order`/`OrderItem`** (only
+  campaign *pricing* fields propagate via
+  `RT_AssetActionSource_Payment_Method_Propagation`, not the code itself,
+  and `OrderItem.ParentOrderItemId`'s bundle hierarchy is lost at
+  assetization) — resolving "which campaign code applies to this member's
+  renewal" from the Asset alone needs either a new propagated field or a
+  traversal back through `AssetActionSource`/`OrderItem`, neither of which
+  is implemented in this scaffold.
+- **Correspondence design decision: both `Asset.Correspondence__c` (existing
+  multipicklist) and a new `Correspondence_Log__c` object are recommended,
+  deliberately, not by default.** `Asset.Correspondence__c` already holds
+  216 three-digit codes of exactly the kind the legacy programs wrote
+  (`'639'`, `'868'`, `'768'`, `'668'`, `'168'`, etc.), so it is a natural,
+  low-friction place to record "this type of correspondence is on file for
+  this member" — but as a multipicklist it cannot represent *when* a
+  specific message was sent, on which channel, with what delivery status,
+  or a repeated code sent more than once (e.g. two SMS reminders 30 days
+  apart both being `'768'`). A multipicklist collapses all of that into a
+  single selected/not-selected value per code. Real audit history (what was
+  sent, to whom, when, success/failure) genuinely needs a separate,
+  timestamped object — hence `Correspondence_Log__c` (deliberately not
+  named `Correspondence__c`, to avoid colliding in name with the existing
+  Asset field). `CorrespondenceLogger.flush()` writes to both.
 - **The exact MOVEit API/product surface is unconfirmed.** §4's outbound
   design assumes an HTTPS "upload file" callout via Named Credential, but
   whether that is MOVEit Transfer's REST API, a MOVEit Automation task
@@ -286,11 +398,13 @@ needing business confirmation rather than being guessed at.
   full CPQ renewal-quote/Order-amendment process or a lighter-weight
   Asset field update, before finalizing `Asset` vs. `Order` responsibility
   boundaries.
-- **`MD999CK`'s check-digit algorithm** is called, never defined, in every
-  reviewed program — it cannot be reproduced in Apex without the original
-  algorithm or a decision to keep calling the legacy service during
-  transition (e.g., via a callout to a wrapped mainframe service, if one
-  is exposed).
+- **`MD999CK`'s check-digit algorithm — RESOLVED, no longer a flag.** The
+  data dictionary confirms a real Apex implementation (`RVNMembershipNo`,
+  invoked from the `Generate_Membership_Number` flow) already exists and
+  runs in the org, populating `Asset.Member_Number__c` and
+  `Account.Member_Number__c`. What remains is a **data-quality backfill**
+  (21 of 40 Membership assets, 53%, still blank — verified), not an
+  algorithm to source or reproduce. Do not re-derive or re-implement this.
 - **The `(processing date − interval) + 1 YEAR` date formula** used by
   `MD022EC`/`MD022LP`/`md022cc` is preserved faithfully in
   `RenewalEligibilityRules` (as `Date_Formula__c = 'OFFSET_PLUS_ONE_YEAR'`)
@@ -324,6 +438,48 @@ needing business confirmation rather than being guessed at.
   concrete SOQL filter in this scaffold (see §5) because the actual
   upstream filtering logic (`MD145A`) was outside the reviewed file set.
 - **Billing-event-code taxonomy** (`FK_MBR_BILL_EVENT` values like `'75'`,
-  `'04'`, `'40'`/`'41'`, `'55'`-`'59'`) has no confirmed mapping onto
-  Billing's native invoice/payment status model; `Billing_Event_Codes__c`
-  on the CMDT is a placeholder pending that mapping exercise.
+  `'04'`, `'40'`/`'41'`, `'55'`-`'59'`) has no confirmed mapping onto any
+  object in this org — see the Billing/Payment gap above.
+  `Billing_Event_Codes__c` on the CMDT is a placeholder pending resolution
+  of that larger gap, not just a mapping exercise.
+- **Real automation is broken/fragile in ways that must not be silently
+  assumed away by this design:**
+  - `Asset.Status` is **null on 97% of Assets (184 of 190), verified** —
+    do not gate any eligibility check on it being populated. This already
+    breaks `Set_Asset_Status_to_Active_if_Unpaid_False` (unreachable, since
+    no Asset is ever `Impaired`) and neuters
+    `Maintain_Only_One_Membership_On_Account`'s Active/Grace/
+    Suspended/Salvage filter in the live org today.
+  - `Asset.CLUB_CODE__c` **never fires — verified 0 of 190 Assets
+    populated** (its before-save flow tries `$Record.Account.Club_Code__c`,
+    a parent traversal unavailable in before-insert context). Use
+    `Asset.Club__c` (the working formula field, `TEXT(Account.Club_Code__c)`)
+    everywhere this design needs a club code on an Asset — never
+    `CLUB_CODE__c`.
+  - `Asset.Membership_Tier__c` and `Asset.RV_Motorcyle_Add_On__c` are
+    derived by **substring-matching sibling Asset Names** (priority
+    Premier > Plus > Classic for tier; `'RV'` substring for the add-on) —
+    fragile, name-dependent logic, not a product-attribute lookup. Do not
+    build new logic that depends on these being reliable; if tier-based
+    eligibility is needed, prefer the input field `OrderItem.Tier__c` or a
+    genuine product-attribute source if one exists, and flag the fragility
+    to the business rather than silently trusting the derived value.
+  - Several Order-side flows this design would otherwise lean on are
+    **DRAFT and never activated**: `Set_Order_Type` (meant to derive
+    `Order.Type` and drive every `Billing*`/`Shipping*` address-copy-down)
+    and the address-copy-down flows themselves. `Order.Type` is
+    nonetheless populated on live records — something platform-internal,
+    not this flow, is setting it — so do not assume address or Type data
+    is being actively maintained by the automation that appears to own it.
+  - `Account.Consent_for_SMS__c`, `Account.Out_Of_Territory__c`, and the
+    Person Account deliverability picklists have **no automation writing
+    them** either (they're hand-maintained/data-migration values per the
+    dictionary) — treat them as reliable *inputs* to read, not fields this
+    migration can assume are being kept current by some other process.
+- **Fields the business has explicitly marked for removal must not be
+  designed around**: `Client_ID__c`, `FCC_Response__c`,
+  `Lodge_Club_Code__c`, `homePageAccount__c`, `Related_Record_Flag__c`,
+  `Updated_By__c` (Account); `Membership__pc`, `Territory__pc` (Person
+  Account); `Membership_Price__c`, `SpecialHandlingObj__c` (Asset). None of
+  these appear anywhere in this document or the Deliverable 3 scaffold as
+  of this correction pass.

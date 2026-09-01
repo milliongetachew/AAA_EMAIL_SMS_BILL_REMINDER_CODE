@@ -1,7 +1,9 @@
 /**
  * Design scaffold — not compiled/tested production code.
- * See docs/salesforce-design/high-level-design.md §4/§5 and
- * docs/salesforce-design/workflows.md §3.
+ * See docs/salesforce-design/high-level-design.md §1/§4/§5/§6 and
+ * docs/salesforce-design/workflows.md §3, and
+ * docs/salesforce-design/data-dictionary-reference.md for the real,
+ * field-verified schema this class now targets.
  *
  * Replaces MD572EM: drains the equivalent of the Finance-populated
  * EMS_WORK_CCREJ work table, but as a Platform Event consumer instead of a
@@ -20,6 +22,22 @@
  * flush() at the end of this same execute() invocation uploads that
  * extract to MOVEit for the downstream EBIZ/EIP email processor to pick
  * up — no live per-message send happens here.
+ *
+ * CORRECTED per the data-dictionary audit (see HLD §1/§6):
+ *  - Members are Person Accounts. Asset.ContactId does NOT exist in this
+ *    org's schema — Asset.AccountId points directly at the Person Account,
+ *    whose PersonEmail/FirstName replace every Contact.* reference below.
+ *  - Club_Code__c/Bill_Plan_Type__c/Membership_Number__c/
+ *    Current_Term_Expiration_Date__c are replaced with the real, confirmed
+ *    fields Club__c, Bill_Plan__c, Member_Number__c, CurrentLifecycleEndDate.
+ *  - getUsableEmail() now gates on Email_Status__pc (real deliverability
+ *    picklist) instead of the placeholder Contact.Email_Valid_Code__c.
+ *  - loadAmountDue() is left as an UNCHANGED, explicitly-flagged blng__
+ *    placeholder — no Billing/Payment object exists anywhere in the
+ *    data-dictionary audit, so there is no different field name to
+ *    substitute. See HLD §1/§6 "Billing/Payment gap".
+ *  - AAA_Join_Year__c remains an UNCHANGED, unconfirmed placeholder; it is
+ *    not covered by the data-dictionary audit either.
  */
 public with sharing class CardDeclineDunningHandler implements Queueable, Database.AllowsCallouts {
 
@@ -51,13 +69,13 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
 
         Map<String, Asset> assetsByMembershipNumber = new Map<String, Asset>();
         for (Asset a : [
-            SELECT Id, ContactId, Contact.Email, Contact.FirstName, AccountId,
-                   Club_Code__c, Bill_Plan_Type__c, Membership_Number__c,
-                   Current_Term_Expiration_Date__c, AAA_Join_Year__c
+            SELECT Id, AccountId, Account.PersonEmail, Account.FirstName, Account.Email_Status__pc,
+                   Club__c, Bill_Plan__c, Member_Number__c,
+                   CurrentLifecycleEndDate, AAA_Join_Year__c
             FROM Asset
-            WHERE Membership_Number__c IN :membershipNumbers
+            WHERE Member_Number__c IN :membershipNumbers
         ]) {
-            assetsByMembershipNumber.put(a.Membership_Number__c, a);
+            assetsByMembershipNumber.put(a.Member_Number__c, a);
         }
 
         Map<Id, Decimal> amountDueByAsset = loadAmountDue(assetsByMembershipNumber.values());
@@ -81,7 +99,7 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
                 paidCount++;
                 continue; // already paid — replaces the "delete as paid" branch
             }
-            if (a.Bill_Plan_Type__c == 'AC') {
+            if (a.Bill_Plan__c == 'AC') {
                 skippedCount++;
                 continue; // still autopay & unpaid — replaces "leave on work table, retry" branch
             }
@@ -89,34 +107,37 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
             // Replaces B4000-GET-EXPDT-YRSERV (MD380MA + MD642BR).
             Integer yearsOfService = getYearsOfService(a);
 
-            // Replaces B5000-GET-16DIG-MBRSHP (MD999CK) — membership
-            // number already carried on the Asset in this architecture,
-            // no separate check-digit call needed; see HLD §6 on MD999CK.
-            String membershipNumber = a.Membership_Number__c;
+            // Replaces B5000-GET-16DIG-MBRSHP (MD999CK) — RESOLVED, not a
+            // gap: Asset.Member_Number__c is already populated by the real
+            // RVNMembershipNo Apex/Generate_Membership_Number flow in this
+            // org (53% blank data-quality gap, not an algorithm gap — see
+            // HLD §1/§6).
+            String membershipNumber = a.Member_Number__c;
 
             // Replaces B1000-GET-CUSTOMER (MC501BCD) + its email-validity
-            // gate (must be non-blank, validity code '1' or '3').
-            String email = getUsableEmail(a.Contact);
+            // gate — now Account.Email_Status__pc (real deliverability
+            // picklist) in place of the legacy validity-code '1'/'3' check.
+            String email = getUsableEmail(a.Account);
             if (String.isBlank(email)) {
                 noEmailCount++;
                 continue;
             }
 
             Map<String, Object> mergeFields = new Map<String, Object>{
-                'firstName' => a.Contact?.FirstName,
+                'firstName' => a.Account?.FirstName,
                 'membershipNumber' => membershipNumber,
                 'amountDue' => amountDue,
                 'cardType' => e.Card_Type__c,
                 'cardLastFour' => e.Card_Last_Four__c,
                 'cardExpiration' => e.Card_Expiration__c,
-                'expirationDate' => a.Current_Term_Expiration_Date__c,
+                'expirationDate' => a.CurrentLifecycleEndDate,
                 'yearsOfService' => yearsOfService
             };
 
             NotificationGatewayService.QueueResult queueResult =
                     gateway.queueEmail(email, 'CARD_DECLINE', mergeFields);
 
-            logger.add(a.Id, a.ContactId, CorrespondenceLogger.Channel.EMAIL, 'CARD_DECLINE',
+            logger.add(a.Id, a.AccountId, CorrespondenceLogger.Channel.EMAIL, 'CARD_DECLINE',
                     queueResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                     'MD572EM');
 
@@ -144,32 +165,45 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
 
     /** Stand-in for MD380MA (current term expiration) + MD642BR (AAA join
      * year): years of service = expiration year - join year, floored at 1
-     * (docs/cobol-legacy/md572em.md, WS-YEAR-SERV-9). */
+     * (docs/cobol-legacy/md572em.md, WS-YEAR-SERV-9). CurrentLifecycleEndDate
+     * is used here as the closest confirmed stand-in for the legacy
+     * "current term expiration" field — exact semantic match UNCONFIRMED,
+     * see HLD §1/§6. */
     @TestVisible
     private Integer getYearsOfService(Asset a) {
-        if (a.Current_Term_Expiration_Date__c == null || a.AAA_Join_Year__c == null) {
+        if (a.CurrentLifecycleEndDate == null || a.AAA_Join_Year__c == null) {
             return 1;
         }
-        Integer years = a.Current_Term_Expiration_Date__c.year() - Integer.valueOf(a.AAA_Join_Year__c);
+        Integer years = a.CurrentLifecycleEndDate.year() - Integer.valueOf(a.AAA_Join_Year__c);
         return years < 1 ? 1 : years;
     }
 
-    /** Stand-in for MC501BCD's email + validity-code gate (valid codes
-     * '1' or '3' in the legacy source). ASSUMPTION: Contact.Email_Valid_Code__c
-     * is a placeholder for whatever email-validity tracking exists in this
-     * org — see HLD §6. */
+    /**
+     * Stand-in for MC501BCD's email + validity-code gate (valid codes '1'
+     * or '3' in the legacy source). CORRECTED: gates on the real
+     * Account.Email_Status__pc deliverability picklist (Valid/Invalid/
+     * Transactional Call Only/Declined) in place of the former
+     * unconfirmed Contact.Email_Valid_Code__c placeholder — see HLD §1/§6.
+     * `personAccount` is the Person Account itself, not a related Contact.
+     */
     @TestVisible
-    private String getUsableEmail(Contact c) {
-        if (c == null || String.isBlank(c.Email)) {
+    private String getUsableEmail(Account personAccount) {
+        if (personAccount == null || String.isBlank(personAccount.PersonEmail)) {
             return null;
         }
-        return c.Email;
+        String status = personAccount.Email_Status__pc;
+        if (status == 'Invalid' || status == 'Declined') {
+            return null;
+        }
+        return personAccount.PersonEmail;
     }
 
     /** Stand-in for MD699BR's club-level rules lookup (club name/
      * abbreviation) — used for report/log labeling, not eligibility, in
      * the legacy program. Kept as a documented no-op here since this
-     * scaffold does not produce a per-club summary report. */
+     * scaffold does not produce a per-club summary report. Callers should
+     * pass Asset.Club__c (the real, working formula field), not the
+     * broken Asset.CLUB_CODE__c — see HLD §6. */
     @TestVisible
     private String getClubName(String clubCode) {
         return clubCode;
@@ -177,8 +211,12 @@ public with sharing class CardDeclineDunningHandler implements Queueable, Databa
 
     @TestVisible
     private Map<Id, Decimal> loadAmountDue(List<Asset> assets) {
-        // ASSUMPTION: blng__Invoice__c.blng__AssetId__c/blng__Balance__c
-        // field names must be validated per HLD §6.
+        // UNRESOLVED, not just unconfirmed field names: the data
+        // dictionary audit found no Billing/Payment object anywhere in
+        // this org's 7 audited objects. blng__Invoice__c is left as an
+        // unchanged, explicitly-flagged placeholder pending a separate
+        // billing/payment investigation — see class header and HLD §1/§6
+        // "Billing/Payment gap".
         Map<Id, Decimal> result = new Map<Id, Decimal>();
         if (assets.isEmpty()) {
             return result;

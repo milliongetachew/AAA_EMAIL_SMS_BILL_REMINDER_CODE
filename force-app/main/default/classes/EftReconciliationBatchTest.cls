@@ -1,29 +1,42 @@
 /**
  * Design scaffold — not compiled/tested production code.
- * NOTE: start()/execute() query the custom objects Eft_Cau_Reject__c and
- * Asset custom fields, which are not deployed metadata yet — see
- * high-level-design.md §2/§6. These tests exercise the @TestVisible pure
- * helper methods that encode MD058CB's date-math and lodge-type branching,
- * which do not require those objects to exist.
+ * NOTE: start()/execute() query the custom objects Eft_Cau_Reject__c
+ * (net-new proposal, not covered by the data-dictionary audit) and Asset,
+ * whose real, confirmed fields (Club__c, Bill_Plan__c, Member_Number__c,
+ * CurrentLifecycleEndDate) this scaffold now targets — see
+ * high-level-design.md §1/§2/§6. These tests exercise the @TestVisible pure
+ * helper methods that encode MD058CB's date-math and out-of-territory
+ * branching, which do not require those objects to exist.
+ *
+ * CORRECTED per data-dictionary-reference.md: out-of-territory is now
+ * Account.Out_Of_Territory__c (real, confirmed boolean field) — the former
+ * guessed lodge-code equivalent is removed entirely, not just relabeled.
  */
 @isTest
 private class EftReconciliationBatchTest {
 
     @isTest
-    static void testIsOutOfTerritory_matchesLegacyLodgeCodes() {
-        // Replicates the OUTOF-TERRITORY level-88 condition (lodge codes
-        // '1','3','4','6') from docs/cobol-legacy/md058cb.md.
+    static void testIsOutOfTerritory_readsAccountField() {
+        // Replaces the former guessed lodge-code equivalent (docs/
+        // cobol-legacy/md058cb.md's OUTOF-TERRITORY level-88 condition)
+        // with the real Account.Out_Of_Territory__c field — see class
+        // header on EftReconciliationBatch and HLD §1/§2/§6.
         EftReconciliationBatch batchInstance = new EftReconciliationBatch();
 
+        Account outOfTerritoryAccount = new Account();
+        outOfTerritoryAccount.put('Out_Of_Territory__c', true);
+        Account inTerritoryAccount = new Account();
+        inTerritoryAccount.put('Out_Of_Territory__c', false);
+
         Test.startTest();
-        Boolean outOfTerritory = batchInstance.isOutOfTerritory('3');
-        Boolean inTerritory = batchInstance.isOutOfTerritory('2');
-        Boolean nullCode = batchInstance.isOutOfTerritory(null);
+        Boolean outOfTerritory = batchInstance.isOutOfTerritory(outOfTerritoryAccount);
+        Boolean inTerritory = batchInstance.isOutOfTerritory(inTerritoryAccount);
+        Boolean nullAccount = batchInstance.isOutOfTerritory(null);
         Test.stopTest();
 
         System.assertEquals(true, outOfTerritory);
         System.assertEquals(false, inTerritory);
-        System.assertEquals(false, nullCode);
+        System.assertEquals(false, nullAccount);
     }
 
     @isTest

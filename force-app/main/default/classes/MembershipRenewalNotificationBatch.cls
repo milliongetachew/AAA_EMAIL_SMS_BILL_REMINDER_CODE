@@ -1,7 +1,9 @@
 /**
  * Design scaffold — not compiled/tested production code.
- * See docs/salesforce-design/high-level-design.md §1/§5 and
- * docs/salesforce-design/workflows.md §1.
+ * See docs/salesforce-design/high-level-design.md §1/§5/§6 and
+ * docs/salesforce-design/workflows.md §1, and
+ * docs/salesforce-design/data-dictionary-reference.md for the real,
+ * field-verified schema this class now targets.
  *
  * Replaces MD021EX, MD022EX, MD022ER, MD022EC, MD022LP, and md022cc: a
  * single config-driven batch that runs one Renewal_Notification_Rule__mdt
@@ -15,6 +17,32 @@
  * extract file per channel per run instead of one per batch scope — this
  * mirrors the legacy programs, which held OSMSFILE/OUTSMS etc. open for
  * the whole run and closed it once at end-of-job.
+ *
+ * CORRECTED per the data-dictionary audit (see HLD §1/§6):
+ *  - Members are Person Accounts. Asset.ContactId does NOT exist in this
+ *    org's schema the way an earlier draft assumed — Asset.AccountId
+ *    points directly at the Person Account. There is no separate Contact
+ *    query; the "Contact" query below is now a Person Account query keyed
+ *    off Asset.AccountId, and "usable phone" is judged from
+ *    PersonMobilePhone + Mobile_Status__pc (a real deliverability
+ *    picklist), not a bare null check.
+ *  - The Asset SOQL below now selects real, confirmed fields
+ *    (Club__c, Bill_Plan__c, Member_Number__c, CurrentLifecycleEndDate,
+ *    LifecycleEndDate) in place of placeholders that don't exist on Asset
+ *    in this org (Club_Code__c, Bill_Plan_Type__c, Membership_Number__c,
+ *    Current_Term_Expiration_Date__c, Renewal_Term_Expiration_Date__c).
+ *    Next_Bill_Event_Code__c and Campaign_Code__c are DROPPED from the
+ *    query entirely — neither exists on Asset in the audited schema, and
+ *    there is currently no confirmed way to source either value (see
+ *    RenewalEligibilityRules class header and HLD §1/§6 "Billing/Payment
+ *    gap" / campaign-code lineage gap). Rules that depend on those two
+ *    inputs will effectively no-op until that data becomes available.
+ *  - loadPaymentsInTransit()/loadAmountDue() are left as UNCHANGED,
+ *    explicitly-flagged blng__ placeholders — the data dictionary confirms
+ *    no Billing/Payment object exists anywhere in this org's audited
+ *    schema, so there is no different field name to substitute; this
+ *    remains a genuinely open question, not a naming detail. Do not treat
+ *    the presence of these placeholders as evidence Billing is installed.
  */
 public with sharing class MembershipRenewalNotificationBatch implements
         Database.Batchable<SObject>, Database.AllowsCallouts, Database.Stateful {
@@ -33,7 +61,7 @@ public with sharing class MembershipRenewalNotificationBatch implements
     // start() to run first; start() replaces this with a
     // sourceProgram-specific instance once the CMDT rule is resolved.
     // @TestVisible so tests can queue rows without going through a real
-    // Asset/Contact query.
+    // Asset/Person Account query.
     @TestVisible
     private NotificationGatewayService gateway = new NotificationGatewayService(null);
 
@@ -76,46 +104,72 @@ public with sharing class MembershipRenewalNotificationBatch implements
         // and effective/renewal-term-expiration date. Club scoping
         // (blank = all clubs, matching MD021EX/MD022EX behavior) mirrors
         // Renewal_Notification_Rule__mdt.Club_Code__c.
-        String query = 'SELECT Id, ContactId, AccountId, Club_Code__c, Bill_Plan_Type__c, ' +
-                'Next_Bill_Event_Code__c, Campaign_Code__c, Membership_Number__c, ' +
-                'Current_Term_Expiration_Date__c, Renewal_Term_Expiration_Date__c ' +
+        //
+        // TARGET-DATE FIELD ASSUMPTION: Asset.LifecycleEndDate is used
+        // here as the closest confirmed stand-in for the legacy
+        // "renewal-term expiration date" cursor filter. Whether
+        // LifecycleEndDate or CurrentLifecycleEndDate is the correct
+        // semantic match for that legacy concept is UNCONFIRMED — see HLD
+        // §1/§6 — and must be validated with the business before cutover.
+        String query = 'SELECT Id, AccountId, Club__c, Bill_Plan__c, ' +
+                'Member_Number__c, CurrentLifecycleEndDate, LifecycleEndDate ' +
                 'FROM Asset ' +
-                'WHERE Renewal_Term_Expiration_Date__c = :targetDate ' +
-                'AND (:rule.Bill_Plan_Filter__c = null OR Bill_Plan_Type__c = :rule.Bill_Plan_Filter__c)';
+                'WHERE LifecycleEndDate = :targetDate ' +
+                'AND (:rule.Bill_Plan_Filter__c = null OR Bill_Plan__c = :rule.Bill_Plan_Filter__c)';
         return Database.getQueryLocator(query);
     }
 
     public void execute(Database.BatchableContext bc, List<Asset> scope) {
         inputCount += scope.size();
 
-        Set<Id> contactIds = new Set<Id>();
-        Set<Id> billingAccountIds = new Set<Id>();
+        Set<Id> accountIds = new Set<Id>();
         for (Asset a : scope) {
-            if (a.ContactId != null) {
-                contactIds.add(a.ContactId);
+            if (a.AccountId != null) {
+                accountIds.add(a.AccountId);
             }
         }
 
-        Map<Id, Contact> contactsById = new Map<Id, Contact>(
-                [SELECT Id, FirstName, MobilePhone, Email FROM Contact WHERE Id IN :contactIds]);
+        // Person Account query replaces the former Contact query — the
+        // member IS the Account (Asset.AccountId points directly at the
+        // Person Account, there is no Asset.ContactId in this schema).
+        // Mobile_Status__pc/Email_Status__pc are the real deliverability
+        // picklists (Valid/Invalid/Transactional Call Only/Declined).
+        Map<Id, Account> personAccountsById = new Map<Id, Account>(
+                [SELECT Id, FirstName, PersonMobilePhone, PersonEmail, Mobile_Status__pc,
+                        Email_Status__pc, Consent_for_SMS__c, Member_Number__c
+                 FROM Account WHERE Id IN :accountIds]);
 
         // Replaces FN435BT: bulk-fetch open/processing payments once per
-        // scope rather than one subroutine call per member.
+        // scope rather than one subroutine call per member. UNRESOLVED —
+        // see class header and loadPaymentsInTransit()'s own comment.
         Map<Id, List<SObject>> paymentsByBillingAccount = loadPaymentsInTransit(scope);
 
         // Replaces MD610BR: bulk-fetch amount-due once per scope.
+        // UNRESOLVED — see class header and loadAmountDue()'s own comment.
         Map<Id, Decimal> amountDueByAsset = loadAmountDue(scope);
+
+        // Real Campaign_Code__c query, bulk-preloaded once per scope
+        // rather than per row — see RenewalEligibilityRules class header.
+        // Only meaningful once Asset carries a resolvable campaign-code
+        // identifier (currently a data-lineage gap — see HLD §1/§6), so
+        // this is wired up but will typically have nothing to match
+        // against yet.
+        Map<String, Campaign_Code__c> activeCampaignCodesByName =
+                String.isNotBlank(rule.Club_Code__c)
+                        ? RenewalEligibilityRules.getActiveCampaignCodesByName(rule.Club_Code__c, System.today())
+                        : null;
 
         CorrespondenceLogger logger = new CorrespondenceLogger();
 
         for (Asset a : scope) {
-            Contact c = contactsById.get(a.ContactId);
-            Boolean hasUsablePhone = c != null && String.isNotBlank(c.MobilePhone);
+            Account personAccount = personAccountsById.get(a.AccountId);
+            Boolean hasUsablePhone = isPhoneDeliverable(personAccount);
             Boolean pit = RenewalEligibilityRules.hasPaymentInTransit(a.AccountId, paymentsByBillingAccount);
             Decimal amountDue = amountDueByAsset.get(a.Id);
 
             RenewalEligibilityRules.EligibilityResult eligibility =
-                    RenewalEligibilityRules.evaluate(a, c, rule, pit, hasUsablePhone, amountDue);
+                    RenewalEligibilityRules.evaluate(a, personAccount, rule, pit, hasUsablePhone, amountDue,
+                            activeCampaignCodesByName);
 
             if (eligibility.skipReason == 'PAYMENT_IN_TRANSIT') {
                 pitSkipCount++;
@@ -139,16 +193,16 @@ public with sharing class MembershipRenewalNotificationBatch implements
             }
 
             Map<String, Object> mergeFields = new Map<String, Object>{
-                'firstName' => c?.FirstName,
-                'membershipNumber' => a.Membership_Number__c,
+                'firstName' => personAccount?.FirstName,
+                'membershipNumber' => a.Member_Number__c,
                 'amountDue' => amountDue,
-                'expirationDate' => a.Current_Term_Expiration_Date__c
+                'expirationDate' => a.CurrentLifecycleEndDate
             };
 
             if (eligibility.smsEligible) {
                 NotificationGatewayService.QueueResult smsResult =
-                        gateway.queueSms(c.MobilePhone, rule.Source_Program__c, mergeFields);
-                logger.add(a.Id, c.Id, CorrespondenceLogger.Channel.SMS, rule.Source_Program__c,
+                        gateway.queueSms(personAccount.PersonMobilePhone, rule.Source_Program__c, mergeFields);
+                logger.add(a.Id, personAccount.Id, CorrespondenceLogger.Channel.SMS, rule.Source_Program__c,
                         smsResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         rule.Source_Program__c);
                 if (smsResult.queued) {
@@ -158,7 +212,7 @@ public with sharing class MembershipRenewalNotificationBatch implements
             if (eligibility.pushEligible) {
                 NotificationGatewayService.QueueResult pushResult =
                         gateway.queuePush(String.valueOf(a.Id), rule.Source_Program__c, mergeFields);
-                logger.add(a.Id, c.Id, CorrespondenceLogger.Channel.PUSH, rule.Source_Program__c,
+                logger.add(a.Id, personAccount.Id, CorrespondenceLogger.Channel.PUSH, rule.Source_Program__c,
                         pushResult.queued ? CorrespondenceLogger.Status.SENT : CorrespondenceLogger.Status.FAILED,
                         rule.Source_Program__c);
                 if (pushResult.queued) {
@@ -192,14 +246,40 @@ public with sharing class MembershipRenewalNotificationBatch implements
                 + ' filesUploaded=' + flushResults.size());
     }
 
+    /**
+     * Replaces MC501BCD's "has a usable phone" gate with the real
+     * deliverability signal: PersonMobilePhone present AND
+     * Mobile_Status__pc not Invalid/Declined. 'Transactional Call Only' is
+     * treated as usable here (this is about whether a message CAN be
+     * delivered, not whether marketing consent exists — that is the
+     * separate Requires_SMS_Consent__c / Account.Consent_for_SMS__c gate).
+     */
+    @TestVisible
+    private Boolean isPhoneDeliverable(Account personAccount) {
+        if (personAccount == null || String.isBlank(personAccount.PersonMobilePhone)) {
+            return false;
+        }
+        String status = personAccount.Mobile_Status__pc;
+        return status == null || (status != 'Invalid' && status != 'Declined');
+    }
+
     @TestVisible
     private Map<Id, List<SObject>> loadPaymentsInTransit(List<Asset> scope) {
-        // ASSUMPTION: blng__Payment__c.blng__BillingAccount__c and
-        // blng__Status__c field names must be validated per HLD §6.
+        // UNRESOLVED, not just unconfirmed field names: the data
+        // dictionary audit found no Billing/Payment object anywhere in
+        // this org's 7 audited objects. blng__Payment__c is left as an
+        // unchanged, explicitly-flagged placeholder pending a separate
+        // billing/payment investigation — see class header and HLD §1/§6
+        // "Billing/Payment gap". Do not swap in a different guessed
+        // object/field name.
         Map<Id, List<SObject>> result = new Map<Id, List<SObject>>();
         Set<Id> billingAccountIds = new Set<Id>();
         for (Asset a : scope) {
             if (a.AccountId != null) {
+                // NOTE: Asset.AccountId is the Person Account itself in
+                // this org (there is no separate billing-account object
+                // confirmed) — reused here as the best available key
+                // pending resolution of the Billing/Payment gap.
                 billingAccountIds.add(a.AccountId);
             }
         }
@@ -220,8 +300,9 @@ public with sharing class MembershipRenewalNotificationBatch implements
 
     @TestVisible
     private Map<Id, Decimal> loadAmountDue(List<Asset> scope) {
-        // ASSUMPTION: blng__Invoice__c.blng__AssetId__c/blng__Balance__c
-        // field names must be validated per HLD §6.
+        // UNRESOLVED, not just unconfirmed field names — see
+        // loadPaymentsInTransit() above and HLD §1/§6 "Billing/Payment
+        // gap". blng__Invoice__c is left unchanged and explicitly flagged.
         Map<Id, Decimal> result = new Map<Id, Decimal>();
         Set<Id> assetIds = new Set<Id>();
         for (Asset a : scope) {

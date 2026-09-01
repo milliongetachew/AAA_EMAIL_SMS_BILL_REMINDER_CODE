@@ -1,11 +1,15 @@
 /**
  * Design scaffold — not compiled/tested production code.
- * NOTE: BillingEmailQueueable queries Asset custom fields
- * (Letter_Code__c, Club_Code__c, Bill_Plan_Type__c, Membership_Number__c)
- * and the placeholder object Asset_Change_Event__c, none of which are
- * deployed metadata yet — see high-level-design.md §2/§6. These tests
- * exercise the class's @TestVisible helper methods directly (which do not
- * require those objects) plus a smoke test of the full execute() path.
+ * NOTE: BillingEmailQueueable queries Asset custom fields (Letter_Code__c —
+ * still unresolved, see class header) plus the real, confirmed fields
+ * Club__c, Bill_Plan__c, Member_Number__c, and the placeholder object
+ * Asset_Change_Event__c (not covered by the data-dictionary audit). These
+ * tests exercise the class's @TestVisible helper methods directly (which do
+ * not require those objects) plus a smoke test of the full execute() path.
+ *
+ * CORRECTED per data-dictionary-reference.md: members are Person Accounts,
+ * not a separate Contact — Asset.AccountId points directly at the Person
+ * Account (PersonEmail/FirstName/LastName), not a Contact lookup.
  */
 @isTest
 private class BillingEmailQueueableTest {
@@ -36,15 +40,13 @@ private class BillingEmailQueueableTest {
 
     @isTest
     static void testBuildEmailPayload_mapsCoreFields() {
-        Account acc = new Account(Name = 'Test Household');
-        insert acc;
-        Contact con = new Contact(FirstName = 'Jane', LastName = 'Doe', Email = 'jane@example.com', AccountId = acc.Id);
-        insert con;
+        Account personAccount = new Account(LastName = 'Doe', FirstName = 'Jane', PersonEmail = 'jane@example.com');
+        insert personAccount;
 
-        Asset a = new Asset(ContactId = con.Id, AccountId = acc.Id);
-        a.put('Club_Code__c', '001');
-        a.put('Bill_Plan_Type__c', 'MP');
-        a.put('Membership_Number__c', '1234567890123456');
+        Asset a = new Asset(AccountId = personAccount.Id);
+        a.put('Club__c', '001');
+        a.put('Bill_Plan__c', 'MP');
+        a.put('Member_Number__c', '12345678');
 
         BillingEmailQueueable queueable = new BillingEmailQueueable(new List<Id>());
 
@@ -54,7 +56,7 @@ private class BillingEmailQueueableTest {
 
         System.assertEquals('001', payload.get('clubCode'));
         System.assertEquals('MP', payload.get('billPlan'));
-        System.assertEquals('1234567890123456', payload.get('membershipNumber'));
+        System.assertEquals('12345678', payload.get('membershipNumber'));
     }
 
     @isTest
