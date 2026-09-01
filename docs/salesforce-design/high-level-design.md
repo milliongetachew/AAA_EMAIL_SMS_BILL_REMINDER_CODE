@@ -169,11 +169,54 @@ COBOL program.
 > pickup job." That was wrong. The actual downstream delivery mechanism —
 > for both the legacy COBOL pipeline and its Revenue Cloud replacement — is
 > a **flat-file hand-off via MOVEit** (a managed file transfer / MFT
-> product): Salesforce/Apex produces a file, MOVEit delivers it (PGP-
-> encrypted) to a shared folder, and the actual SMS gateway / push service /
-> EBIZ-EIP email processor picks it up from there, exactly as it picked up
-> `OSMSFILE`, `OUTSMS`, `MD572O1`, etc. in the legacy pipeline. The section
-> below replaces the earlier (incorrect) per-message-callout description.
+> product): Salesforce/Apex produces a file, and it is delivered from there
+> to the actual SMS gateway / push service / EBIZ-EIP email processor,
+> exactly as `OSMSFILE`, `OUTSMS`, `MD572O1`, etc. were picked up by a
+> separate job in the legacy pipeline. The section below replaces the
+> earlier (incorrect) per-message-callout description. **See the second
+> correction immediately below** — the "MOVEit delivers it PGP-encrypted"
+> detail in this paragraph is itself superseded by real job-configuration
+> evidence.
+
+> **Second correction (post-review, real Control-M/AFT job configuration
+> confirmed)** — see `docs/salesforce-design/moveit-aft-reference.md` for
+> the full evidence this is based on: the paragraph above still described a
+> **single-stage** model (Salesforce uploads plaintext, MOVEit PGP-encrypts
+> it server-side). Real AFT job screenshots and three real output-file
+> samples show the actual pipeline is **two stages**, chained by job
+> predecessor, and MOVEit is a relay, not the encrypting system:
+> 1. **Stage 1 ("O" job, write-to-staging)** — an AFT job (e.g.
+>    `MRD1104O_AFT_PUSH_MEM_ZEROAUTH`) transfers a mainframe dataset to a
+>    **local staging path** on a Windows/mainframe-local server (`gid01943`,
+>    under `%%PGPTemp.\MRD\...`). The file is **plaintext** at this point.
+> 2. **Stage 2 ("E" job, "Encrypted File Transfer Job")** — a separate AFT
+>    job (`Required Predecessor` = the Stage 1 job) PGP-encrypts the Stage 1
+>    file **client-side, before it ever reaches MOVEit**, then transfers the
+>    already-encrypted file to MOVEit (`/users/SMSPUSH/OUTBOUND/`) and
+>    deletes the plaintext source.
+>
+> **MOVEit never sees plaintext and never performs the encryption itself.**
+> The observed PGP key (`salesforce-prod-042325-1 (sfmc xfer)`, vendor
+> `SalesForce`), combined with SFMC MobileConnect-specific column names in
+> the real SMS extract (`SubscriberKey`, `Locale`), make it near-certain the
+> **real final destination past MOVEit is Salesforce Marketing Cloud** —
+> strongly indicated, not 100% confirmed; worth a direct confirmation with
+> whoever owns the SFMC side.
+>
+> **Consequence for this design**: Salesforce/Apex does not need to
+> implement PGP encryption or speak MOVEit's transfer protocol at all. The
+> realistic implementation is to plug into the same existing two-stage
+> AFT/MOVEit pipeline — i.e. have the Apex-generated extract land wherever
+> Stage 1 currently drops its plaintext staging file, or an equivalent new
+> drop point the AFT/integration team provisions for Salesforce-originated
+> files — and let the existing Stage 2 job carry it the rest of the way.
+> **This hand-off mechanism is an explicitly open question, not a resolved
+> design**: Apex can only make outbound HTTPS callouts, it cannot write to
+> a Windows/mainframe-local file share like `gid01943` directly. Whether the
+> real mechanism is an HTTPS endpoint the AFT/integration layer exposes for
+> this purpose, or something else entirely, needs confirmation from the
+> AFT/MOVEit/integration team before implementation — do not assume a
+> specific endpoint shape as fact anywhere below.
 
 All outbound channels are unified behind `NotificationGatewayService`
 (Deliverable 3), which now implements a **queue-then-flush** pattern
@@ -194,26 +237,32 @@ mirroring the legacy write-record / close-file pattern:
 Two Apex/Salesforce platform constraints shape this design and must be
 respected, not worked around:
 
-- **Apex has no native OpenPGP/PGP implementation.** `Crypto.encrypt()` /
+- **Apex has no native OpenPGP/PGP implementation, and — per the real AFT
+  job configuration — it doesn't need one.** `Crypto.encrypt()` /
   `Crypto.encryptWithManagedIV()` are AES/RSA primitives, not the OpenPGP
-  message container format MOVEit-consuming systems expect. The
-  **recommended default** is that MOVEit Automation (or whichever MOVEit
-  product tier is in use) applies PGP encryption **server-side**, as a
-  workflow step after Salesforce uploads the **plaintext** extract file —
-  this is standard MFT-platform functionality and keeps Apex out of the
-  PGP business entirely. A fallback of pre-encrypting before the file
-  leaves Salesforce (via a middleware hop or an AppExchange PGP package)
-  should be pursued **only if** the business specifically requires
-  encryption-in-transit-from-Salesforce, not as the default.
-- **Apex has no SFTP client** — only HTTP(S) callouts (no raw sockets).
-  The Salesforce → MOVEit handoff must therefore go through a MOVEit
-  REST/HTTPS upload API via Named Credential, never SFTP directly from
-  Apex. **UNRESOLVED**: the exact MOVEit product/API surface in use
-  (MOVEit Transfer's REST "upload file" API vs. a MOVEit Automation task
-  trigger vs. an integration-platform hop that itself speaks SFTP on
-  Salesforce's behalf) has not been confirmed; `NotificationGatewayService`
+  message container format the downstream pipeline expects, but PGP
+  encryption is confirmed to already happen **outside Salesforce
+  entirely** — in the existing Stage 2 "Encrypted File Transfer" AFT job,
+  client-side, before the file ever reaches MOVEit (see the second
+  correction above and `moveit-aft-reference.md`). Apex's job is only to
+  produce the **plaintext** extract and get it to wherever that existing
+  pipeline's input point is; it does not need to implement PGP itself, nor
+  does it need MOVEit (or anything else) to apply PGP *after* Apex's
+  upload, since Stage 2 already runs ahead of MOVEit in the real pipeline.
+- **Apex has no SFTP client** — only HTTP(S) callouts (no raw sockets), and
+  it cannot write to a Windows/mainframe-local file share the way the
+  Stage 1 AFT job does. **UNRESOLVED**: exactly how Apex hands its
+  plaintext extract off to the AFT/MOVEit pipeline has not been confirmed
+  — it is very unlikely to be a direct MOVEit REST upload API call, since
+  the real pipeline shows MOVEit only receiving files *after* the Stage 2
+  encrypt job has already run, not receiving Salesforce's plaintext
+  directly. Whether the real hand-off is an HTTPS endpoint the
+  AFT/integration layer exposes for Salesforce-originated files, or some
+  other mechanism entirely, needs confirmation from the AFT/MOVEit/
+  integration team before implementation; `NotificationGatewayService`
   implements a placeholder HTTPS upload shape pending that confirmation —
-  see its class header for details.
+  see its class header for details, and do not treat that placeholder as a
+  confirmed MOVEit API contract.
 
 **File format**: the legacy programs did not use one consistent flat-file
 format — `MD021EX` wrote comma-delimited CSV (`OUT-FILE`/`MD021OP`),
@@ -296,12 +345,19 @@ filtering happens in an upstream extract job that was not part of the
 reviewed source (`MD145A`, a clone source, is also outside the reviewed
 set). Its Revenue Cloud equivalent is a `Renewal_Notification_Rule__mdt`
 record (`Date_Formula__c = 'FIXED_MINUS_77'`) processed by the same
-`MembershipRenewalNotificationBatch`, once the "-77 days before
-expiration" eligibility window is confirmed and expressed as a SOQL
-filter on `Asset.CurrentLifecycleEndDate` (or `LifecycleEndDate` — which
-of the two standard fields corresponds to "current term expiration" is
-itself unconfirmed, see §6) — flagged in §6 as needing business
-confirmation rather than being guessed at.
+`MembershipRenewalNotificationBatch`. **The "-77 days" window itself is
+now confirmed real**, not just an inferred name: the real AFT staging
+filename for `MD022` SMS INT77
+(`TRAN_SMS_MEM_ZEROAUTH_MINUS_77DAYS_%%$DATE..csv`, and its Push
+counterpart `TRAN_PUSH_MEM_ZEROAUTH_MINUS_77DAYS_...`, per
+`moveit-aft-reference.md`) confirms `-77 days` is the actual production
+window, not a documentation artifact. **What remains unresolved** is only
+the exact upstream candidate-list filtering logic that populates that
+extract (still `MD145A`, still outside the reviewed source, per the
+existing caveat below) — the window's identity is resolved, the
+eligibility logic that feeds it is not — and, separately, which of
+`Asset.CurrentLifecycleEndDate`/`LifecycleEndDate` the `-77 days` should
+be measured against (see §6).
 
 ## 6. Explicit Flags for Validation
 
@@ -434,9 +490,18 @@ confirmation rather than being guessed at.
   `EftReconciliationBatch`'s scaffold, matching current production
   behavior. Confirm with the business whether this is permanently retired
   before treating its absence here as final.
-- **`MD022ZA`'s "-77 days" eligibility window** is not implemented as a
-  concrete SOQL filter in this scaffold (see §5) because the actual
-  upstream filtering logic (`MD145A`) was outside the reviewed file set.
+- **`MD022ZA`'s "-77 days" eligibility window — partially resolved.** The
+  window itself is now **confirmed real** (the real AFT staging filename
+  for `MD022` SMS/PUSH INT77 is literally
+  `TRAN_SMS_MEM_ZEROAUTH_MINUS_77DAYS_...`/
+  `TRAN_PUSH_MEM_ZEROAUTH_MINUS_77DAYS_...`, per
+  `moveit-aft-reference.md`), so this is no longer an open question about
+  whether "-77 days" is a real production value. It is still **not**
+  implemented as a concrete SOQL filter in this scaffold (see §5), because
+  the actual upstream candidate-list filtering logic that populates the
+  extract (`MD145A`) remains outside the reviewed file set — do not treat
+  the window's confirmation as resolving that separate, still-open
+  eligibility-logic gap.
 - **Billing-event-code taxonomy** (`FK_MBR_BILL_EVENT` values like `'75'`,
   `'04'`, `'40'`/`'41'`, `'55'`-`'59'`) has no confirmed mapping onto any
   object in this org — see the Billing/Payment gap above.

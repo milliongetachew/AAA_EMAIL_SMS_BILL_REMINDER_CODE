@@ -5,8 +5,13 @@
  * perform a callout (so they need no HTTP mock), and flush() performs at
  * most one callout per channel that has queued rows. ASSUMPTION: the mock
  * below intercepts the HTTP call itself, so it does not depend on the real
- * MOVEit Named Credential/endpoint shape (both UNRESOLVED — see class
- * header on NotificationGatewayService).
+ * endpoint shape flush() ultimately calls — which, per the real two-stage
+ * AFT/MOVEit job configuration (see
+ * docs/salesforce-design/moveit-aft-reference.md and the class header on
+ * NotificationGatewayService), is UNRESOLVED and unlikely to be a direct
+ * MOVEit API call at all, since MOVEit only ever receives a file after a
+ * separate, already-existing "Encrypted File Transfer" AFT job has
+ * PGP-encrypted it.
  */
 @isTest
 private class NotificationGatewayServiceTest {

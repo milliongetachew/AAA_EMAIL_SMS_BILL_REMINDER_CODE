@@ -8,74 +8,102 @@
  * provider API. It is the same flat-file hand-off pattern the legacy COBOL
  * programs already used — build up SMS-RECORD/PUSH-RECORD/EMAIL-RECORD rows
  * in memory over the course of a run, then write ONE extract file per
- * channel (.txt or .csv, per program — see docs/cobol-legacy/*.md) that is
- * delivered via MOVEit (a managed file transfer / MFT product) to a shared
- * folder, where the actual downstream SMS gateway / push service / EBIZ-EIP
- * email processor picks it up — exactly like `OSMSFILE`, `OUTSMS`,
- * `MD572O1`, etc. were picked up by a separate job in the legacy pipeline.
+ * channel (.txt or .csv, per program — see docs/cobol-legacy/*.md) that
+ * feeds into the same AFT/MOVEit pipeline that picked up `OSMSFILE`,
+ * `OUTSMS`, `MD572O1`, etc. in the legacy pipeline.
  *
- * This class therefore does two things, corresponding to that two-step
- * legacy pattern:
+ * SECOND CORRECTION — real AFT/Control-M job configuration confirmed (see
+ * docs/salesforce-design/moveit-aft-reference.md for the full evidence):
+ * that pipeline is TWO STAGES, and MOVEit is a relay, not the system that
+ * encrypts or the final destination.
+ *   Stage 1 ("O" job) — a plaintext file lands in a local staging path
+ *     (mainframe-local today; e.g. `%%PGPTemp.\MRD\...` on host `gid01943`).
+ *   Stage 2 ("E" job, "Encrypted File Transfer Job") — a SEPARATE, already-
+ *     existing AFT job PGP-encrypts that file CLIENT-SIDE, before it ever
+ *     reaches MOVEit, then transfers the already-encrypted file to MOVEit
+ *     (`/users/SMSPUSH/OUTBOUND/`) and deletes the plaintext source.
+ * The PGP key observed (`salesforce-prod-042325-1 (sfmc xfer)`, vendor
+ * `SalesForce`) plus SFMC MobileConnect-specific column names in the real
+ * SMS extract (`SubscriberKey`, `Locale`) make it near-certain the real
+ * final consumer past MOVEit is Salesforce Marketing Cloud — strongly
+ * indicated, not 100% confirmed.
+ *
+ * This class therefore does two things, corresponding to the queue/flush
+ * pattern — but see the UNRESOLVED note under constraint (2) below for what
+ * flush() actually needs to call, which is genuinely open, not a corrected
+ * guess:
  *   1. queueSms()/queuePush()/queueEmail() — append a row to today's
  *      in-memory extract for that channel (replaces a single
  *      WRITE SMS-RECORD / WRITE PUSH-RECORD / WRITE EMAIL-RECORD).
  *   2. flush() — called ONCE per batch run (from Batch Apex's finish(), or
  *      at the end of a Queueable's execute()), assembles each channel's
- *      buffered rows into a file body and uploads it to MOVEit via a single
- *      HTTPS callout per channel (replaces CLOSE OUTPUT-FILE + the
- *      downstream job's file pickup).
+ *      buffered rows into a file body and uploads it via a single HTTPS
+ *      callout per channel to wherever this pipeline's plaintext hand-off
+ *      point turns out to be (replaces CLOSE OUTPUT-FILE + the downstream
+ *      job's file pickup) — NOT necessarily a direct MOVEit API call; see
+ *      constraint (2).
  *
  * TWO CONSTRAINTS THIS CLASS DELIBERATELY DOES NOT TRY TO WORK AROUND:
  *
- *  (1) PGP ENCRYPTION IS OUT OF SCOPE FOR APEX. Apex has no native OpenPGP/
- *      PGP message-format implementation — Crypto.encrypt()/
+ *  (1) PGP ENCRYPTION IS OUT OF SCOPE FOR APEX — AND, per the real job
+ *      config, it doesn't need to be. Apex has no native OpenPGP/PGP
+ *      message-format implementation — Crypto.encrypt()/
  *      encryptWithManagedIV() are raw AES/RSA primitives, not the OpenPGP
- *      container format MOVEit-consuming systems expect. The recommended
- *      default is that MOVEit Automation (or whichever MOVEit product tier
- *      is in use) applies PGP encryption SERVER-SIDE, as a workflow step
- *      after this class uploads the PLAINTEXT extract file — this is
- *      standard MFT-platform functionality and keeps Apex out of the PGP
- *      business entirely. The files this class builds and uploads are
- *      therefore plaintext; do not attempt to PGP-encrypt them in Apex.
- *      FALLBACK ONLY (do not default to this): if the business specifically
- *      requires encryption-in-transit-FROM-Salesforce (i.e. MOVEit must
- *      never see plaintext), that requires either a middleware hop that
- *      PGP-encrypts before handing off to MOVEit, or an AppExchange PGP
- *      package — neither is implemented here, and this should only be
- *      pursued if explicitly required.
+ *      container format the downstream pipeline expects — but that gap is
+ *      moot: PGP encryption already happens OUTSIDE Salesforce entirely, in
+ *      the existing Stage 2 "Encrypted File Transfer" AFT job, client-side,
+ *      BEFORE the file ever reaches MOVEit (see the two-stage model above).
+ *      This class's job is only to produce the PLAINTEXT extract and get it
+ *      to wherever that existing pipeline's input point is; do not attempt
+ *      to PGP-encrypt anything in Apex, and do not assume MOVEit itself
+ *      applies PGP after this class's upload — the real pipeline shows
+ *      MOVEit only ever receiving an already-encrypted file.
  *
- *  (2) NO SFTP FROM APEX. Apex has no raw socket / SFTP client — only
- *      HTTP(S) callouts. So the Salesforce → MOVEit handoff MUST go through
- *      a MOVEit REST/HTTPS upload API via Named Credential, never SFTP
- *      directly from this class. UNRESOLVED: the exact MOVEit product/API
- *      surface in use — MOVEit Transfer's REST "upload file" API, a MOVEit
- *      Automation task trigger endpoint, or an integration-platform
- *      (MuleSoft/etc.) hop that itself talks SFTP/MOVEit on Salesforce's
- *      behalf — has NOT been confirmed. `uploadChannelFile()` below assumes
- *      a generic "PUT raw file body to a folder-scoped HTTPS endpoint"
- *      shape as a placeholder ONLY; the Named Credential name, endpoint
- *      path, HTTP method, auth scheme, and request/response payload shape
- *      must all be confirmed with the MOVEit/integration team before this
- *      can be implemented for real.
+ *  (2) NO SFTP FROM APEX, AND NO CONFIRMED DIRECT-TO-MOVEIT HANDOFF EITHER.
+ *      Apex has no raw socket / SFTP client — only HTTP(S) callouts — and it
+ *      cannot write to a Windows/mainframe-local file share the way the
+ *      real Stage 1 AFT job does. UNRESOLVED, same rigor as the PGP flag
+ *      above: how this class's plaintext extract actually reaches the
+ *      AFT/MOVEit pipeline has NOT been confirmed, and it is very unlikely
+ *      to be a direct MOVEit REST "upload file" call — the real pipeline
+ *      shows MOVEit receiving files only AFTER the Stage 2 encrypt job has
+ *      already run, not receiving a Salesforce-originated plaintext file
+ *      directly. Whether the real hand-off is an HTTPS endpoint the
+ *      AFT/integration layer exposes for Salesforce-originated files, or
+ *      some other mechanism entirely, needs confirmation from the
+ *      AFT/MOVEit/integration team before implementation.
+ *      `uploadChannelFile()` below assumes a generic "PUT raw file body to
+ *      a folder-scoped HTTPS endpoint" shape as a PLACEHOLDER ONLY, standing
+ *      in for whatever that real hand-off point turns out to be — do not
+ *      treat `MOVEIT_NAMED_CREDENTIAL`/`MOVEIT_UPLOAD_PATH` as a confirmed
+ *      API contract, and do not replace them with a different but equally
+ *      invented shape without that confirmation.
  *
  * FILE FORMAT: per docs/cobol-legacy/*.md, the legacy programs did NOT use
  * one consistent format — `MD021EX` wrote comma-delimited CSV
  * (`OUT-FILE`/`MD021OP`), `MD134ML` and `MD572EM` wrote semicolon-delimited
  * text (`MD134OP`, `MD572O1`), and the `MD022EX`/`MD022ER`/`MD022EC`/
  * `MD022LP`/`md022cc` (`OSMSFILE`) and `MD058CB` (`OUTSMS`/`OUTPSH`/
- * `OUTEML`) families wrote FIXED-WIDTH `PIC X(nnn)` records. Since the
- * downstream consumer of these files is not changing, the safest default is
- * to replicate each legacy program's existing record layout rather than
- * inventing a new shape. This scaffold implements only a generic
- * comma/semicolon DELIMITED writer (see `DELIMITER_BY_PROGRAM` below) as a
- * placeholder for the delimited-format programs; it does NOT implement
- * fixed-width formatting for the `MD022*`/`MD058CB` families — that needs a
- * dedicated fixed-width formatter built from those programs' exact
- * copybooks (`MRD058SF`/`MRD058PF`/`MRD058EF`, etc.) before cutover for
- * those specific programs. A clean, modernized CSV shape (dropping the
- * legacy layout entirely) is a possible FUTURE-phase option, but only once
- * the downstream consumer system itself is revisited — do not do this by
- * default.
+ * `OUTEML`) families wrote FIXED-WIDTH `PIC X(nnn)` records per the reviewed
+ * source. Real current sample output files (see
+ * docs/salesforce-design/moveit-aft-reference.md "Real output file
+ * layouts") now confirm the ACTUAL current column layouts for three of
+ * these channels — SMS/Push (9 columns), Email (11 columns), and MD058CB's
+ * CAU email sub-format (8 columns, semicolon-delimited AND space-padded to
+ * a fixed width per field, a hybrid format) — see `SMS_PUSH_COLUMNS`,
+ * `EMAIL_COLUMNS`, and `CAU_EMAIL_COLUMNS` below, which replace the earlier
+ * illustrative/guessed shapes for those programs. Column order matters if
+ * the downstream SFMC import is positional rather than header-mapped —
+ * NOT confirmed either way; do not assume header-based mapping is safe.
+ * This scaffold implements only a generic comma/semicolon DELIMITED writer
+ * (see `DELIMITER_BY_PROGRAM` below); it does NOT implement the CAU hybrid
+ * fixed-width-plus-delimiter padding, and it does NOT implement fixed-width
+ * formatting for any program/channel not covered by the three real samples
+ * above (notably `MD058CB`'s SMS/Push channels, and `MD022*`'s original
+ * `PIC X(nnn)` layout if it differs from the now-confirmed real CSV shape)
+ * — those gaps need a dedicated formatter built from the relevant copybooks
+ * (`MRD058SF`/`MRD058PF`/`MRD058EF`, etc.) or further real-sample
+ * confirmation before cutover for those specific programs/channels.
  *
  * GOVERNOR-LIMIT NOTE (revised): the old "100 callouts per transaction"
  * concern from the per-message-callout design no longer applies the same
@@ -106,22 +134,78 @@ public with sharing class NotificationGatewayService {
         public String errorMessage;
     }
 
-    // UNRESOLVED — placeholder Named Credential name; confirm the real one
-    // with the MOVEit/integration team (see class header, constraint 2).
+    // UNRESOLVED — placeholder Named Credential name, standing in for
+    // whatever the real AFT/MOVEit pipeline hand-off point turns out to be.
+    // Per the real two-stage AFT job config (see class header, constraint
+    // 2, and docs/salesforce-design/moveit-aft-reference.md), this is very
+    // unlikely to be a direct MOVEit API — MOVEit only ever receives a file
+    // AFTER a separate, already-existing "Encrypted File Transfer" AFT job
+    // has PGP-encrypted it. Confirm the real hand-off target with the
+    // AFT/integration team before implementation.
     private static final String MOVEIT_NAMED_CREDENTIAL = 'callout:MOVEit_MFT';
 
     // UNRESOLVED — placeholder upload path/shape; see class header,
     // constraint 2. Do not treat this as a confirmed API contract.
     private static final String MOVEIT_UPLOAD_PATH = '/api/v1/folders/UNCONFIRMED_FOLDER_ID/files';
 
-    // Delimiter used by each legacy program's flat-file format, per
-    // docs/cobol-legacy/*.md (see class header FILE FORMAT note). Programs
-    // not listed here used FIXED-WIDTH records and are NOT correctly
+    // Real, confirmed CURRENT column layouts, from actual sample output
+    // files (see docs/salesforce-design/moveit-aft-reference.md "Real
+    // output file layouts"). These REPLACE any earlier illustrative/guessed
+    // shape for the programs/channels they apply to. Column order matters
+    // if the downstream SFMC import is positional rather than header-mapped
+    // — NOT confirmed either way.
+    //
+    // SMS/Push extract — applies to the MD021EX/MD022* "OSMSFILE" family
+    // (MD021EX, MD022EX, MD022ER, MD022EC, MD022LP, md022cc, MD022ZA).
+    // Verified against a real sample for MD021EX-generated output; the rest
+    // of the MD022* family is assumed to share this real layout based on
+    // the shared AFT staging-filename convention
+    // (MRDPN.MD021/MD022.PUSH|SMS.*), but that has NOT been verified
+    // per-program the way the MD021EX sample was — confirm before relying
+    // on it for those specifically.
+    private static final List<String> SMS_PUSH_COLUMNS = new List<String>{
+        'SubscriberKey', 'MobileNumber', 'Locale', 'CustId', 'ClubCode',
+        'Membership#', 'ExpirationDt', 'FirstName', 'Zipcode'
+    };
+    // Email extract — applies to the MD134ML/MD572EM semicolon-delimited
+    // family.
+    private static final List<String> EMAIL_COLUMNS = new List<String>{
+        'EmailAddress', 'CustID', 'ClubCode', 'State', 'FirstName',
+        'LastName', 'Membership Level', 'CellName', 'Zip',
+        'MembershipNumber', 'ExpirationDate'
+    };
+    // CAU email layout — belongs specifically to MD058CB's EMAIL channel
+    // (not its SMS/Push channels, which remain an unconfirmed fixed-width
+    // gap — see class header). Semicolon-delimited AND each field is
+    // space-padded to a fixed width before the delimiter — a hybrid
+    // fixed-width/delimited format. NOT representable by the plain
+    // delimited buildFileBody() writer below as-is; the padding behavior is
+    // NOT implemented here. Rows with a blank EmailAddress are valid in the
+    // real sample (paired with a legacy `000NNNNNN999901`-style CustId) and
+    // must still be emitted, not filtered out, unless the business says
+    // otherwise.
+    private static final List<String> CAU_EMAIL_COLUMNS = new List<String>{
+        'EmailAddress', 'CustId', 'ClubCode', 'FirstName', 'Zipcode',
+        'MembershipNumber', 'ExpirationDate', 'Last4Digits'
+    };
+
+    // Delimiter used by each legacy program's flat-file format. Programs
+    // not listed here (notably MD058CB, and any MD022* program not yet
+    // individually verified against a real sample — see SMS_PUSH_COLUMNS
+    // above) used FIXED-WIDTH or hybrid records and are NOT correctly
     // represented by this generic delimited writer — see class header.
     private static final Map<String, String> DELIMITER_BY_PROGRAM = new Map<String, String>{
-        'MD021EX' => ',',  // OUT-FILE / MD021OP — comma-delimited CSV
-        'MD134ML' => ';',  // EMAIL-FILE-OUT / MD134OP — semicolon-delimited
-        'MD572EM' => ';'   // EMAIL-FILE-OUT / MD572O1 — semicolon-delimited
+        // SMS/Push real layout confirmed — SMS_PUSH_COLUMNS above.
+        'MD021EX' => ',',  // OUT-FILE / MD021OP — verified against real sample
+        'MD022EX' => ',',
+        'MD022ER' => ',',
+        'MD022EC' => ',',
+        'MD022LP' => ',',
+        'md022cc' => ',',
+        'MD022ZA' => ',',
+        // Email real layout confirmed — EMAIL_COLUMNS above.
+        'MD134ML' => ';',  // EMAIL-FILE-OUT / MD134OP
+        'MD572EM' => ';'   // EMAIL-FILE-OUT / MD572O1
     };
     private static final String DEFAULT_DELIMITER = ',';
 
@@ -273,7 +357,14 @@ public with sharing class NotificationGatewayService {
      * guarantee — a production formatter should use an explicit ordered
      * field list per source program rather than trusting map iteration
      * order, especially for any program where exact legacy column order
-     * matters to the downstream consumer.
+     * matters to the downstream consumer. `SMS_PUSH_COLUMNS`/
+     * `EMAIL_COLUMNS`/`CAU_EMAIL_COLUMNS` above document the real,
+     * confirmed column order for the programs they cover and are the
+     * intended source for that explicit ordered field list — callers
+     * queueing rows for those programs should build their merge-field maps
+     * in that column order rather than relying on this method to reorder
+     * them. This method does not yet enforce that order itself, and does
+     * NOT implement the CAU family's fixed-width space-padding.
      */
     @TestVisible
     private String buildFileBody(List<Map<String, Object>> rows, String delimiter) {
