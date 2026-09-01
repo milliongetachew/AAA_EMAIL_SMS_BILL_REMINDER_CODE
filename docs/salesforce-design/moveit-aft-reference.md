@@ -47,18 +47,37 @@ worth a direct confirmation with whoever owns the SFMC side.
 
 **Design implication for `NotificationGatewayService`:** the Salesforce Core
 (Revenue Cloud) side of this migration does not need to implement PGP
-encryption OR speak MOVEit's transfer protocol directly. The realistic
-implementation is to plug into the **same existing two-stage AFT/MOVEit
-pipeline** — i.e. have the new Apex-generated extract land wherever Stage 1
-currently drops its plaintext staging file (or an equivalent new drop point
-the AFT/integration team provisions for Salesforce-originated files), and
-let the existing Stage 2 encrypt+transfer job carry it the rest of the way.
+encryption itself either way. The realistic implementation is to plug into
+the **same existing two-stage AFT/MOVEit pipeline** — i.e. have the new
+Apex-generated extract land wherever Stage 1 currently drops its plaintext
+staging file (or an equivalent new drop point the AFT/integration team
+provisions for Salesforce-originated files), and let the existing Stage 2
+encryption step carry it the rest of the way.
 **Open question, not yet resolved:** Salesforce Apex can only make outbound
 HTTPS callouts — it cannot write to a Windows/mainframe-local file share
 like the `gid01943` staging server directly. Whether Salesforce hands off
 via an HTTPS endpoint the AFT/integration layer exposes, or a different
 mechanism entirely, needs confirmation from the AFT/MOVEit/integration team
 before implementation — do not assume either shape as fact.
+
+**UPDATE (user-confirmed 2026-09-01): MOVEit itself is capable of PGP
+encryption.** This means the Stage 2 "Encrypted File Transfer Job" observed
+in the screenshots may well be MOVEit's own automation engine executing the
+`PUB_SalesForce`-keyed encryption task, not a separate non-MOVEit system —
+Stage 2 could genuinely be "part of MOVEit," not just chained in front of
+it. That makes the most concrete integration path: **Apex uploads a
+plaintext file directly to a MOVEit-exposed HTTPS endpoint via Named
+Credential, and MOVEit's own automation applies PGP encryption and forwards
+the result onward** (very plausibly still to SFMC) — i.e. Option A from the
+"how does Salesforce reach this pipeline" discussion is now the leading
+candidate, not just one of three equally-uncertain options.
+**Still open, and still needs a real answer, not a guess:** the specific
+MOVEit endpoint/API shape Salesforce would call, what credential/auth it
+needs, and whether a *new* MOVEit task/folder needs to be provisioned for
+Salesforce-originated files (reusing the exact `PUB_SalesForce` task as-is
+vs. a parallel one) — confirm with whoever administers MOVEit before
+`MOVEIT_NAMED_CREDENTIAL`/`MOVEIT_UPLOAD_PATH` in
+`NotificationGatewayService.cls` are treated as anything but placeholders.
 
 ## Naming conventions observed
 
@@ -126,12 +145,13 @@ unless the business says otherwise.
 ## What this changes in the Apex scaffold
 
 - `NotificationGatewayService.uploadChannelFile()`'s destination (currently
-  a placeholder `MOVEIT_UPLOAD_PATH`) should be reconsidered against the
-  two-stage model above — it is very unlikely Salesforce can call a MOVEit
-  REST endpoint carrying a raw plaintext file the way the current scaffold
-  assumes, since real PGP encryption happens in a separate Stage 2 job
-  *before* MOVEit is even involved. This needs a real answer from the
-  AFT/integration team, not a corrected guess.
+  a placeholder `MOVEIT_UPLOAD_PATH`) is now plausibly correct in *shape* —
+  Apex calling a MOVEit-exposed HTTPS endpoint with a plaintext file body,
+  letting MOVEit's own automation apply PGP encryption — since MOVEit is
+  confirmed capable of encryption. The endpoint path, auth, and whether a
+  new task/folder needs provisioning for Salesforce-originated files are
+  still real unknowns needing a real answer from the AFT/MOVEit team, not a
+  corrected guess.
 - `DELIMITER_BY_PROGRAM`'s file-format table should be replaced with the
   real per-channel layouts above for the programs sampled here
   (SMS/Push, Email, CAU-email); the fixed-width `MD022*`/`MD058CB` gap
