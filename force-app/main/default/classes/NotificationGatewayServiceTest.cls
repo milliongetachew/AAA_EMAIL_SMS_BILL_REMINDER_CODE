@@ -8,10 +8,11 @@
  * endpoint shape flush() ultimately calls — which, per the real two-stage
  * AFT/MOVEit job configuration (see
  * docs/salesforce-design/moveit-aft-reference.md and the class header on
- * NotificationGatewayService), is UNRESOLVED and unlikely to be a direct
- * MOVEit API call at all, since MOVEit only ever receives a file after a
- * separate, already-existing "Encrypted File Transfer" AFT job has
- * PGP-encrypted it.
+ * NotificationGatewayService), is UNRESOLVED. Since MOVEit itself is
+ * confirmed capable of PGP encryption, a direct MOVEit-exposed HTTPS
+ * endpoint (with MOVEit's own automation applying PGP encryption after the
+ * upload) is now the leading candidate for that endpoint shape, though the
+ * exact path/auth is still unconfirmed.
  */
 @isTest
 private class NotificationGatewayServiceTest {

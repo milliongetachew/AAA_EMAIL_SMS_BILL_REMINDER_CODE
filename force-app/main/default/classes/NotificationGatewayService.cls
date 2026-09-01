@@ -14,19 +14,33 @@
  *
  * SECOND CORRECTION — real AFT/Control-M job configuration confirmed (see
  * docs/salesforce-design/moveit-aft-reference.md for the full evidence):
- * that pipeline is TWO STAGES, and MOVEit is a relay, not the system that
- * encrypts or the final destination.
+ * that pipeline is TWO STAGES.
  *   Stage 1 ("O" job) — a plaintext file lands in a local staging path
  *     (mainframe-local today; e.g. `%%PGPTemp.\MRD\...` on host `gid01943`).
- *   Stage 2 ("E" job, "Encrypted File Transfer Job") — a SEPARATE, already-
- *     existing AFT job PGP-encrypts that file CLIENT-SIDE, before it ever
- *     reaches MOVEit, then transfers the already-encrypted file to MOVEit
- *     (`/users/SMSPUSH/OUTBOUND/`) and deletes the plaintext source.
+ *   Stage 2 ("E" job, "Encrypted File Transfer Job") — PGP-encrypts the
+ *     Stage 1 file and transfers the encrypted result to MOVEit
+ *     (`/users/SMSPUSH/OUTBOUND/`), deleting the plaintext source.
  * The PGP key observed (`salesforce-prod-042325-1 (sfmc xfer)`, vendor
  * `SalesForce`) plus SFMC MobileConnect-specific column names in the real
  * SMS extract (`SubscriberKey`, `Locale`) make it near-certain the real
  * final consumer past MOVEit is Salesforce Marketing Cloud — strongly
  * indicated, not 100% confirmed.
+ *
+ * THIRD CORRECTION (user-confirmed 2026-09-01): MOVEit itself is capable of
+ * PGP encryption. This means the Stage 2 "Encrypted File Transfer Job"
+ * above may well be MOVEit's own automation engine executing the
+ * `PUB_SalesForce`-keyed encryption task directly, not a separate
+ * non-MOVEit system chained in front of it. That makes the most concrete
+ * integration path: Apex uploads a plaintext file directly to a
+ * MOVEit-exposed HTTPS endpoint via Named Credential, and MOVEit's own
+ * automation applies PGP encryption and forwards the result onward (very
+ * plausibly still to SFMC) — this is now the leading candidate for the
+ * hand-off mechanism, not one of several equally-uncertain options. Still
+ * open, and still needing a real answer, not a guess: the specific MOVEit
+ * endpoint/API shape, credential/auth, and whether a new MOVEit task/
+ * folder needs provisioning for Salesforce-originated files (reusing the
+ * exact `PUB_SalesForce` task as-is vs. a parallel one) — see
+ * moveit-aft-reference.md.
  *
  * This class therefore does two things, corresponding to the queue/flush
  * pattern — but see the UNRESOLVED note under constraint (2) below for what
@@ -45,39 +59,44 @@
  *
  * TWO CONSTRAINTS THIS CLASS DELIBERATELY DOES NOT TRY TO WORK AROUND:
  *
- *  (1) PGP ENCRYPTION IS OUT OF SCOPE FOR APEX — AND, per the real job
- *      config, it doesn't need to be. Apex has no native OpenPGP/PGP
- *      message-format implementation — Crypto.encrypt()/
- *      encryptWithManagedIV() are raw AES/RSA primitives, not the OpenPGP
- *      container format the downstream pipeline expects — but that gap is
- *      moot: PGP encryption already happens OUTSIDE Salesforce entirely, in
- *      the existing Stage 2 "Encrypted File Transfer" AFT job, client-side,
- *      BEFORE the file ever reaches MOVEit (see the two-stage model above).
- *      This class's job is only to produce the PLAINTEXT extract and get it
- *      to wherever that existing pipeline's input point is; do not attempt
- *      to PGP-encrypt anything in Apex, and do not assume MOVEit itself
- *      applies PGP after this class's upload — the real pipeline shows
- *      MOVEit only ever receiving an already-encrypted file.
+ *  (1) PGP ENCRYPTION IS OUT OF SCOPE FOR APEX — it doesn't need to
+ *      implement it. Apex has no native OpenPGP/PGP message-format
+ *      implementation — Crypto.encrypt()/encryptWithManagedIV() are raw
+ *      AES/RSA primitives, not the OpenPGP container format the downstream
+ *      pipeline expects — but that gap is moot: PGP encryption already
+ *      happens OUTSIDE Apex, either in a separate Stage 2 "Encrypted File
+ *      Transfer" AFT job, or — per the user-confirmed update (see the third
+ *      correction above and moveit-aft-reference.md) — plausibly by
+ *      MOVEit's own automation engine running that same Stage 2 task
+ *      directly. This class's job is only to produce the PLAINTEXT extract
+ *      and get it to wherever that existing pipeline's input point is; do
+ *      not attempt to PGP-encrypt anything in Apex either way. Whether
+ *      MOVEit itself applies PGP after this class's upload (now the leading
+ *      candidate) or a separate job encrypts before MOVEit ever sees the
+ *      file is the open hand-off question addressed in constraint (2).
  *
  *  (2) NO SFTP FROM APEX, AND NO CONFIRMED DIRECT-TO-MOVEIT HANDOFF EITHER.
  *      Apex has no raw socket / SFTP client — only HTTP(S) callouts — and it
  *      cannot write to a Windows/mainframe-local file share the way the
  *      real Stage 1 AFT job does. UNRESOLVED, same rigor as the PGP flag
  *      above: how this class's plaintext extract actually reaches the
- *      AFT/MOVEit pipeline has NOT been confirmed, and it is very unlikely
- *      to be a direct MOVEit REST "upload file" call — the real pipeline
- *      shows MOVEit receiving files only AFTER the Stage 2 encrypt job has
- *      already run, not receiving a Salesforce-originated plaintext file
- *      directly. Whether the real hand-off is an HTTPS endpoint the
- *      AFT/integration layer exposes for Salesforce-originated files, or
- *      some other mechanism entirely, needs confirmation from the
- *      AFT/MOVEit/integration team before implementation.
- *      `uploadChannelFile()` below assumes a generic "PUT raw file body to
- *      a folder-scoped HTTPS endpoint" shape as a PLACEHOLDER ONLY, standing
- *      in for whatever that real hand-off point turns out to be — do not
- *      treat `MOVEIT_NAMED_CREDENTIAL`/`MOVEIT_UPLOAD_PATH` as a confirmed
- *      API contract, and do not replace them with a different but equally
- *      invented shape without that confirmation.
+ *      AFT/MOVEit pipeline has NOT been confirmed. Since MOVEit is
+ *      confirmed capable of PGP encryption itself (see the third correction
+ *      above), a direct HTTPS upload to a MOVEit-exposed endpoint — with
+ *      MOVEit's own automation applying PGP encryption after this class's
+ *      plaintext upload — is now the LEADING CANDIDATE, not the unlikely
+ *      option it was previously framed as. Whether that reuses the existing
+ *      `PUB_SalesForce` task/endpoint as-is or requires a new one
+ *      provisioned for Salesforce-originated files, what credential/auth it
+ *      needs, and the exact endpoint/API shape all remain unconfirmed and
+ *      need a real answer from the AFT/MOVEit/integration team before
+ *      implementation. `uploadChannelFile()` below assumes a generic "PUT
+ *      raw file body to a folder-scoped HTTPS endpoint" shape as a
+ *      PLACEHOLDER ONLY, standing in for whatever that real hand-off point
+ *      turns out to be — do not treat `MOVEIT_NAMED_CREDENTIAL`/
+ *      `MOVEIT_UPLOAD_PATH` as a confirmed API contract, and do not replace
+ *      them with a different but equally invented shape without that
+ *      confirmation.
  *
  * FILE FORMAT: per docs/cobol-legacy/*.md, the legacy programs did NOT use
  * one consistent format — `MD021EX` wrote comma-delimited CSV
@@ -136,12 +155,14 @@ public with sharing class NotificationGatewayService {
 
     // UNRESOLVED — placeholder Named Credential name, standing in for
     // whatever the real AFT/MOVEit pipeline hand-off point turns out to be.
-    // Per the real two-stage AFT job config (see class header, constraint
-    // 2, and docs/salesforce-design/moveit-aft-reference.md), this is very
-    // unlikely to be a direct MOVEit API — MOVEit only ever receives a file
-    // AFTER a separate, already-existing "Encrypted File Transfer" AFT job
-    // has PGP-encrypted it. Confirm the real hand-off target with the
-    // AFT/integration team before implementation.
+    // Per the real two-stage AFT job config and the user-confirmed update
+    // that MOVEit itself is capable of PGP encryption (see class header,
+    // constraint 2, and docs/salesforce-design/moveit-aft-reference.md), a
+    // direct MOVEit-exposed HTTPS endpoint — with MOVEit's own automation
+    // applying PGP encryption after this upload — is now the leading
+    // candidate. Confirm the real hand-off target (endpoint, auth, and
+    // whether a new task/folder needs provisioning) with the AFT/MOVEit/
+    // integration team before implementation.
     private static final String MOVEIT_NAMED_CREDENTIAL = 'callout:MOVEit_MFT';
 
     // UNRESOLVED — placeholder upload path/shape; see class header,

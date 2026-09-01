@@ -12,19 +12,25 @@ org audit), not a confirmed field.
 
 **Every `flush()` step below** ("uploads to MOVEit") is corrected per
 `docs/salesforce-design/moveit-aft-reference.md`, the real Control-M/AFT
-job configuration: MOVEit is a **relay**, not the final destination or the
-system that applies PGP encryption. The real pipeline is two stages — a
-plaintext file lands in a staging drop point, then a separate, already-
-existing "Encrypted File Transfer" AFT job PGP-encrypts it client-side and
-relays it through MOVEit — and the evidence (PGP key named
-`salesforce-prod-042325-1 (sfmc xfer)`, SFMC MobileConnect-specific column
-names `SubscriberKey`/`Locale` in the real SMS extract) strongly indicates
-**Salesforce Marketing Cloud is the real final consumer** past MOVEit.
-`flush()`'s exact hand-off mechanism into that pipeline is an **open
-question** (Apex can only make outbound HTTPS callouts; it cannot write to
-the AFT pipeline's local staging file share directly) — see
-`high-level-design.md` §4 and `moveit-aft-reference.md` before assuming any
-specific endpoint shape.
+job configuration: MOVEit is not necessarily the final destination — the
+real pipeline is two stages, chained by job predecessor, and the evidence
+(PGP key named `salesforce-prod-042325-1 (sfmc xfer)`, SFMC
+MobileConnect-specific column names `SubscriberKey`/`Locale` in the real
+SMS extract) strongly indicates **Salesforce Marketing Cloud is the real
+final consumer** past MOVEit. A plaintext file lands in a staging drop
+point (Stage 1), then a separate "Encrypted File Transfer Job" (Stage 2)
+PGP-encrypts it and delivers it to MOVEit. **MOVEit itself is confirmed
+capable of PGP encryption (user-confirmed 2026-09-01)**, so Stage 2 may
+well be MOVEit's own automation engine running that encryption task
+directly, rather than a separate non-MOVEit system chained in front of it
+— meaning Apex uploading a plaintext file straight to a MOVEit-exposed
+HTTPS endpoint, with MOVEit itself applying the PGP encryption, is now the
+leading candidate for `flush()`'s hand-off mechanism. `flush()`'s exact
+endpoint/API shape, auth, and whether a new MOVEit task/folder needs
+provisioning remain an **open question** (Apex can only make outbound
+HTTPS callouts; it cannot write to the AFT pipeline's local staging file
+share directly) — see `high-level-design.md` §4 and
+`moveit-aft-reference.md` before assuming any specific endpoint shape.
 
 ## 1. Renewal SMS/Push Eligibility Batch
 
@@ -50,7 +56,7 @@ flowchart TD
     H -->|"Yes, amount = 0"| SKIP4["Skip + count\n(replaces WS-NO-AMOUNT-COUNT)"]
     H -->|"No, or amount &gt; 0"| I["NotificationGatewayService.queueSms() /\n.queuePush()\n(per Requires_Push__c) — appends to\ntoday's in-memory extract, no callout yet"]
     I --> J["CorrespondenceLogger.log()\n(logged as row queued into the extract,\nnot confirmed delivered)"]
-    C --> K["finish(): summary counts +\nNotificationGatewayService.flush()\n(uploads today's SMS/Push extract file(s)\nto the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nexisting Stage-2 AFT job then PGP-encrypts\n+ relays via MOVEit, likely to SFMC;\nreplaces 2050-EOF-ROUTINE\ndisplays + CLOSE OUTPUT-FILE)"]
+    C --> K["finish(): summary counts +\nNotificationGatewayService.flush()\n(uploads today's SMS/Push extract file(s)\nto the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nStage-2 job (possibly MOVEit's own\nautomation) PGP-encrypts + relays via MOVEit, likely to SFMC;\nreplaces 2050-EOF-ROUTINE\ndisplays + CLOSE OUTPUT-FILE)"]
 ```
 
 **Caption**: The legacy programs differ mainly in *which* gates apply and
@@ -79,7 +85,7 @@ flowchart TD
     F -->|"No"| G
     G --> H["NotificationGatewayService.queueEmail()\n(appends to today's in-memory email\nextract, no callout yet)"]
     H --> I["CorrespondenceLogger.log()\n(type '639' for letter 139,\nreplaces MD300MA / MEM-481279;\nwrites to Correspondence_Log__c (audit)\nAND appends '639' to Asset.Correspondence__c\n(existing multipicklist signal) —\nsee HLD §1/§6; logged as row queued into\nthe extract, not confirmed delivered)"]
-    I --> J2["End of execute(): flush()\nuploads today's email extract file\nto the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nexisting Stage-2 AFT job then PGP-encrypts\n+ relays via MOVEit to the downstream\nEBIZ/EIP processor\n(replaces CLOSE EMAIL-FILE-OUT)"]
+    I --> J2["End of execute(): flush()\nuploads today's email extract file\nto the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nStage-2 job (possibly MOVEit's own\nautomation) PGP-encrypts + relays via MOVEit to the downstream\nEBIZ/EIP processor\n(replaces CLOSE EMAIL-FILE-OUT)"]
 ```
 
 **Caption**: The letter-139 web-self-service suppression rule
@@ -125,7 +131,7 @@ sequenceDiagram
             H->>CL: log(status=Sent, type=CardDecline)\n(writes to Correspondence_Log__c AND\nAsset.Correspondence__c; row queued into\nthe extract, not confirmed delivered)
         end
     end
-    H->>NG: flush()\n(end of execute(): uploads today's email\nextract file to the AFT staging hand-off\npoint — mechanism UNRESOLVED, see HLD §4;\nexisting Stage-2 AFT job then PGP-encrypts\n+ relays via MOVEit to the downstream\nEBIZ/EIP processor;\nreplaces CLOSE EMAIL-FILE-OUT)
+    H->>NG: flush()\n(end of execute(): uploads today's email\nextract file to the AFT staging hand-off\npoint — mechanism UNRESOLVED, see HLD §4;\nStage-2 job (possibly MOVEit's own\nautomation) PGP-encrypts + relays via MOVEit to the downstream\nEBIZ/EIP processor;\nreplaces CLOSE EMAIL-FILE-OUT)
     NG-->>H: upload result
     Note over H,CL: getProcessingDate() (replaces MD930BR)\nis called once at handler start,\nnot shown per-branch above for brevity.
 ```
@@ -164,7 +170,7 @@ flowchart TD
     O --> P["Mark Eft_Cau_Reject__c.Processed__c = true"]
     G --> P
     J --> P
-    P --> Q["finish(): NotificationGatewayService.flush()\nuploads today's SMS/Push/Email extract\nfile(s) to the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nexisting Stage-2 AFT job then PGP-encrypts\n+ relays via MOVEit to the downstream\ngateway(s), likely SFMC\n(replaces CLOSE OUTSMS/OUTPSH/OUTEML)"]
+    P --> Q["finish(): NotificationGatewayService.flush()\nuploads today's SMS/Push/Email extract\nfile(s) to the AFT staging hand-off point —\nmechanism UNRESOLVED, see HLD §4;\nStage-2 job (possibly MOVEit's own\nautomation) PGP-encrypts + relays via MOVEit to the downstream\ngateway(s), likely SFMC\n(replaces CLOSE OUTSMS/OUTPSH/OUTEML)"]
 ```
 
 **Caption**: The historical "flip household bill plan back to AM and
