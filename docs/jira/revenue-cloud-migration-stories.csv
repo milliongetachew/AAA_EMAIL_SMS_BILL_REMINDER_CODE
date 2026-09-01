@@ -1,12 +1,14 @@
 Issue Type,Summary,Description,Epic Name,Epic Link,Priority,Labels,Story Points,Status
-Epic,Mainframe to Salesforce Revenue Cloud Migration - Membership Renewal & Billing Communications,"Retire the 10 legacy COBOL batch programs (ACSC membership renewal / billing / card-decline notification pipeline) and rebuild the equivalent business logic natively on Salesforce Revenue Cloud (CPQ + Billing + Subscription Management).
+Epic,Mainframe to Salesforce Revenue Cloud Migration - Membership Renewal & Billing Communications,"Retire the 10 legacy COBOL batch programs (ACSC membership renewal / billing / card-decline notification pipeline) and rebuild the equivalent business logic on Salesforce Revenue Cloud - confirmed as native Revenue Lifecycle Management (standard Order/OrderItem/Asset via the revenue_o2aflows package), NOT the CPQ/Billing (SBQQ/blng) managed packages originally assumed.
 
 Source system inventory and legacy behavior: docs/cobol-legacy/README.md
 Target architecture: docs/salesforce-design/high-level-design.md
+Real org schema (field-verified audit): docs/salesforce-design/data-dictionary-reference.md
+Real outbound delivery pipeline (AFT/MOVEit job config): docs/salesforce-design/moveit-aft-reference.md
 Process flows: docs/salesforce-design/workflows.md
 Apex design scaffold: force-app/main/default/classes/
 
-Scope covers: renewal SMS/push eligibility notifications (MD021EX, MD022 family), billing email (MD134ML), card-decline/dunning email (MD572EM), and EFT reject / bill-plan reconciliation (MD058CB).",COBOL-to-RevCloud Migration,,High,"migration,revenue-cloud,cobol",,In Progress
+Scope covers: renewal SMS/push eligibility notifications (MD021EX, MD022 family), billing email (MD134ML), card-decline/dunning email (MD572EM), and EFT reject / bill-plan reconciliation (MD058CB). Members are Person Accounts in the real org, not a separate Contact.",COBOL-to-RevCloud Migration,,High,"migration,revenue-cloud,cobol",,In Progress
 Story,Discovery & Inventory - Document Legacy COBOL Programs and Data Lineage,"Read and document all 10 legacy COBOL programs: purpose, inputs/outputs, data structures, control flow, and modification history.
 
 Acceptance Criteria:
@@ -14,70 +16,97 @@ Acceptance Criteria:
 - Shared subroutines and copybooks identified and cross-referenced
 - Ambiguous / environment-dependent behavior explicitly flagged, not guessed at
 
-Status note: initial pass complete for all 10 programs (docs/cobol-legacy/). Needs a business/SME review pass before being treated as final.",,COBOL-to-RevCloud Migration,High,"migration,discovery,documentation",8,In Review
+Status note: initial pass complete for all 10 programs (docs/cobol-legacy/). Needs a business/SME review pass before being treated as final. Unaffected by the later data-model/delivery-pipeline corrections.",,COBOL-to-RevCloud Migration,High,"migration,discovery,documentation",8,In Review
 Story,Design Revenue Cloud Target Architecture & Data Model,"Design the target Salesforce Revenue Cloud object model, integration architecture, and Apex class inventory that replaces the legacy DB2 tables and file-based batch pipeline.
 
 Acceptance Criteria:
-- Object-model mapping table (legacy DB2/COBOL concept -> Revenue Cloud object) reviewed and confirmed by a Salesforce architect with access to the real org
-- blng__/SBQQ field API names validated against the actual installed Billing/CPQ package version (currently illustrative only)
+- Object-model mapping table (legacy DB2/COBOL concept -> Revenue Cloud object) corrected against a real, field-verified org audit (done - see data-dictionary-reference.md) and reviewed/signed off by a Salesforce architect
+- Person Account confirmed as the real member model (done) - Asset.AccountId points directly at the Person Account, not a separate Contact
+- Billing/Payment data source identified - genuinely unresolved, see the new 'Resolve Billing/Payment Data Source' story
 - Renewal modeling approach (Order amendment vs. Asset field update) confirmed with the business
+- Asset -> campaign-code lineage gap resolved (Asset does not currently carry a campaign-code identifier forward from the Order/OrderItem)
 
-Status note: draft complete (docs/salesforce-design/high-level-design.md, docs/salesforce-design/workflows.md). Explicitly not yet validated against a real Revenue Cloud org - see HLD doc section 6 for the full list of open items.",,COBOL-to-RevCloud Migration,High,"migration,architecture,revenue-cloud",13,In Review
-Story,Implement Outbound Notification Delivery via MOVEit (PGP-Encrypted File Handoff),"Legacy and target both deliver SMS/Push/Email content as a file, not a live API call: generate a .txt/.csv extract, PGP-encrypt it, and deliver via MOVEit to a shared folder for the downstream sender system to pick up.
+Status note: corrected against the real org's field-verified data dictionary (docs/salesforce-design/data-dictionary-reference.md) - the original CPQ/Billing (SBQQ/blng) assumption was wrong and has been replaced throughout. Membership-number generation (the MD999CK replacement) is confirmed already implemented in the org (RVNMembershipNo Apex) - remaining gap there is a 53%-blank data backfill, not a design gap. Campaign_Code__c/Campaign_Action__c exist as real objects but have zero automation today.",,COBOL-to-RevCloud Migration,High,"migration,architecture,revenue-cloud",13,In Review
+Story,Resolve Billing/Payment Data Source,"No Invoice/Payment/BillingAccount object of any kind appears in the real org's field-verified data dictionary (7 objects audited: Order, OrderItem, Asset, Account, Person Account, Campaign_Code__c, Campaign_Action__c). This blocks the amount-due (MD610BR-equivalent) and payment-in-transit (FN435BT-equivalent) logic in the renewal batch and the card-decline trigger source for the dunning handler.
 
 Acceptance Criteria:
-- NotificationGatewayService accumulates per-channel records across a batch run and flushes one file per channel per run, instead of one callout per message
-- File layout matches (or is explicitly reconciled with) each legacy program's existing flat-file record layout, since the downstream consumer is not changing
-- PGP encryption responsibility is confirmed: MOVEit Automation encrypting server-side (recommended default) vs. an external pre-encryption hop - Apex has no native OpenPGP support
-- Salesforce -> MOVEit transport confirmed as MOVEit's HTTPS/REST upload API via Named Credential - Apex has no native SFTP client
-- Governor-limit review updated to reflect batched file uploads instead of per-message callouts
+- Confirm whether a Billing/Payment object exists elsewhere in the org outside this audit's scope, or needs to be built
+- If it exists: document its real fields the same way data-dictionary-reference.md does for the audited objects
+- If it doesn't: decide the source of truth for amount-due and payment-in-transit before RenewalEligibilityRules.hasPaymentInTransit()/matchesBillingEventFilter() and CardDeclineDunningHandler's trigger source can be finalized
+- All current blng__Payment__c/blng__Invoice__c references in the Apex scaffold are explicitly flagged placeholders, not assumed real - do not re-guess a different object/field name without this confirmation
 
-Status note: in progress - see force-app/main/default/classes/NotificationGatewayService.cls.",,COBOL-to-RevCloud Migration,High,"migration,integration,moveit,pgp",8,In Progress
+Status note: new - split out from the architecture story because this single gap blocks acceptance criteria on two other stories (Renewal Batch, Card-Decline Handler) and deserves its own owner/timeline.",,COBOL-to-RevCloud Migration,High,"migration,architecture,billing,blocked",5,To Do
+Story,Confirm Apex-to-AFT Pipeline Hand-off Mechanism,"Real Control-M/AFT job configuration (docs/salesforce-design/moveit-aft-reference.md) shows the actual delivery pipeline is two-stage: a plaintext file lands in local staging (Stage 1, mainframe-local), then a SEPARATE, already-existing 'Encrypted File Transfer Job' (Stage 2) PGP-encrypts it client-side before it ever reaches MOVEit. MOVEit is a relay, not the encryptor or the final destination - the PGP key is named for Salesforce Marketing Cloud (salesforce-prod-042325-1, 'sfmc xfer'), making SFMC the likely true final consumer, not MOVEit itself or a generic vendor.
+
+Acceptance Criteria:
+- Confirm with the AFT/integration team how a Salesforce-originated plaintext extract should reach this pipeline's input point - Apex can only make outbound HTTPS callouts, it cannot write to the Stage 1 staging file share (a Windows/mainframe-local server) directly
+- Confirm whether the final consumer past MOVEit is in fact Salesforce Marketing Cloud (strongly indicated, not yet certain)
+- Replace NotificationGatewayService's placeholder MOVEIT_NAMED_CREDENTIAL/MOVEIT_UPLOAD_PATH with the real, confirmed endpoint once known
+- Confirm whether the downstream import (if SFMC) is header-mapped or positional, since column order matters for a positional import
+
+Status note: new - this was assumed resolved in the original MOVEit story ('MOVEit's HTTPS/REST upload API') but the real job config shows that assumption was wrong. Now explicitly unresolved rather than re-guessed. Blocks final implementation of NotificationGatewayService.flush().",,COBOL-to-RevCloud Migration,High,"migration,integration,moveit,blocked",5,To Do
+Story,Implement Outbound Notification File Generation (Queue-and-Flush),"Legacy and target both deliver SMS/Push/Email content as a file, not a live API call: accumulate rows across a batch run into an in-memory extract per channel, then generate ONE file per channel per run in the real, sample-confirmed column layout, ready to hand off to the existing AFT/MOVEit pipeline (see 'Confirm Apex-to-AFT Pipeline Hand-off Mechanism' for the still-open transport question).
+
+Acceptance Criteria:
+- NotificationGatewayService accumulates per-channel records across a batch run (queueSms/queuePush/queueEmail) and flushes one file per channel per run, instead of one callout per message - done
+- Real column layouts adopted for SMS/Push (9 columns), Email (11 columns), and MD058CB's CAU email sub-format (8 columns, semicolon-delimited and space-padded) - done, see SMS_PUSH_COLUMNS/EMAIL_COLUMNS/CAU_EMAIL_COLUMNS in NotificationGatewayService.cls
+- Remaining gaps closed: MD058CB's SMS/Push channels (no real sample yet) and full MD022* fixed-width PIC X(nnn) layout if it differs from the now-confirmed CSV shape
+- PGP encryption confirmed OUT OF SCOPE for this class - it already happens outside Salesforce in the existing Stage 2 AFT job (done, do not re-add it here)
+- Governor-limit review updated to reflect batched file uploads instead of per-message callouts - done
+
+Status note: file-generation logic is in good shape; what remains is the transport hand-off, tracked separately in 'Confirm Apex-to-AFT Pipeline Hand-off Mechanism'.",,COBOL-to-RevCloud Migration,High,"migration,apex,integration",8,In Progress
 Story,Build Renewal SMS/Push Eligibility Batch (MembershipRenewalNotificationBatch),"Replace MD021EX and the MD022 family (MD022EX, MD022ER, MD022EC, MD022LP, md022cc) with one config-driven Batch Apex job, using Renewal_Notification_Rule__mdt to express the per-program eligibility differences (day offsets, campaign codes, consent requirements, bill-plan/bill-cycle exclusions).
 
 Acceptance Criteria:
 - Renewal_Notification_Rule__mdt custom metadata type created with one record per legacy program variant
 - MembershipRenewalNotificationBatch + MembershipRenewalNotificationScheduler deployed and covered by tests exercising each rule variant
-- MD022ZA's eligibility window (currently a placeholder pending review of the out-of-scope upstream job MD145A) resolved with the business
+- SMS consent, club code, and bill-plan checks read the real confirmed fields (Account.Consent_for_SMS__c, Asset.Club__c, Asset.Bill_Plan__c) - done
+- Campaign-code eligibility queries the real Campaign_Code__c object (done) - note this object has zero automation today, so this migration is the first thing to actually enforce it; needs business sign-off on that behavior change
+- Amount-due / payment-in-transit gates blocked on 'Resolve Billing/Payment Data Source'
+- MD022ZA's '-77 days' window is now confirmed real (matches real AFT staging filenames) but the upstream MD145A candidate-list logic that feeds it remains unresolved
 - Parity-tested against legacy MD021EX/MD022* output for at least one full run
 
-Status note: design scaffold exists (force-app/main/default/classes/MembershipRenewalNotificationBatch.cls) - not yet implemented against a real org or data model.",,COBOL-to-RevCloud Migration,Medium,"migration,apex,batch-apex",13,To Do
+Status note: design scaffold corrected against the real Person Account/field model - not yet implemented against a real org, and still blocked on billing/payment data source.",,COBOL-to-RevCloud Migration,Medium,"migration,apex,batch-apex",13,To Do
 Story,Build Billing Email Service (BillingEmailQueueable),"Replace MD134ML: generate billing correspondence email for MP bill-plan members, preserving the letter-139 web-self-service suppression rule (INC943560).
 
 Acceptance Criteria:
-- BillingEmailQueueable deployed with the suppression check ported faithfully
-- Resolved with the business whether Correspondence__c should log all billing emails or only the letter-139-equivalent subset (legacy code only logs the latter; a 2025 change ticket implies broader intent - discrepancy needs a decision)
+- BillingEmailQueueable deployed with the suppression check ported faithfully, using Person Account fields
+- Correspondence design decided and built: BOTH the new Correspondence_Log__c object (timestamped audit trail) and a write-back to the existing Asset.Correspondence__c multipicklist (216 legacy-shaped codes) - done in scaffold, needs real deployment
+- Resolved with the business whether Correspondence_Log__c should log all billing emails or only the letter-139-equivalent subset (legacy code only logs the latter; a 2025 change ticket implies broader intent - discrepancy needs a decision)
 - Parity-tested against legacy MD134ML output
 
-Status note: design scaffold exists (force-app/main/default/classes/BillingEmailQueueable.cls).",,COBOL-to-RevCloud Migration,Medium,"migration,apex,queueable",8,To Do
+Status note: design scaffold exists and corrected against the real data model (force-app/main/default/classes/BillingEmailQueueable.cls).",,COBOL-to-RevCloud Migration,Medium,"migration,apex,queueable",8,To Do
 Story,Build Card-Decline / Dunning Handler (CardDeclineDunningHandler),"Replace MD572EM: generate card-decline email, triggered from a Card_Decline_Event__e Platform Event instead of Finance populating a DB2 work table.
 
 Acceptance Criteria:
-- Card_Decline_Event__e platform event defined and published on blng__Payment__c decline/failed transition
-- CardDeclineDunningHandler deployed, covering the shared subroutine equivalents (club rules, term expiration, years of service, amount due, membership number, contact/email lookup)
-- Retry semantics decided: legacy work-table 'leave row for next run' behavior needs an explicit re-query pattern (e.g. scheduled batch over still-Declined blng__Payment__c records), since Platform Events are not retried the same way
+- Card_Decline_Event__e platform event defined - trigger source blocked on 'Resolve Billing/Payment Data Source' (no confirmed Payment object exists to transition status on)
+- CardDeclineDunningHandler deployed, covering the shared subroutine equivalents (club rules, term expiration, years of service, amount due, membership number, contact/email lookup), using Person Account fields
+- Retry semantics decided: legacy work-table 'leave row for next run' behavior needs an explicit re-query pattern, since Platform Events are not retried the same way
 - Parity-tested against legacy MD572EM output
 
-Status note: design scaffold exists (force-app/main/default/classes/CardDeclineDunningHandler.cls).",,COBOL-to-RevCloud Migration,Medium,"migration,apex,platform-events",8,To Do
+Status note: design scaffold exists (force-app/main/default/classes/CardDeclineDunningHandler.cls), corrected to Person Account fields - still blocked on a confirmed Payment/Billing object to trigger from.",,COBOL-to-RevCloud Migration,Medium,"migration,apex,platform-events,blocked",8,To Do
 Story,Build EFT Reject / Bill-Plan Reconciliation Batch (EftReconciliationBatch),"Replace MD058CB: reconcile EFT card-auto-update rejects against household bill-plan status, generating out-of-sync/out-of-territory correspondence and SMS/Push/Email notifications.
 
 Acceptance Criteria:
 - Eft_Cau_Reject__c staging object defined for inbound EFT reject records
-- EftReconciliationBatch deployed, covering the bill-plan/lodge-type/days-to-expiration branches
+- EftReconciliationBatch deployed, covering the bill-plan/out-of-territory/days-to-expiration branches
+- Out-of-territory check uses the real Account.Out_Of_Territory__c field (done) - replaces an originally guessed lodge-code list
+- CAU email output uses the real, sample-confirmed layout (done); SMS/Push channels for this program remain an unconfirmed fixed-width gap
 - Explicit business decision recorded on the dormant bill-plan-flip-to-AM logic (currently disabled in production since MEM-480905) - confirm permanently retired before finalizing
 - Retry/checkpoint semantics validated against actual at-least-once vs. exactly-once processing requirements (legacy program has GO TO-based deadlock retry with no direct Apex equivalent)
 - Parity-tested against legacy MD058CB output for a full semi-monthly cycle
 
-Status note: design scaffold exists (force-app/main/default/classes/EftReconciliationBatch.cls) - the largest and highest-risk program in scope (2,200+ lines of source).",,COBOL-to-RevCloud Migration,High,"migration,apex,batch-apex,eft",13,To Do
+Status note: design scaffold exists (force-app/main/default/classes/EftReconciliationBatch.cls) and corrected against the real data model - the largest and highest-risk program in scope (2,200+ lines of source).",,COBOL-to-RevCloud Migration,High,"migration,apex,batch-apex,eft",13,To Do
 Story,Parallel Run & Validation Against Legacy Output,"Run each migrated wave side by side with its legacy COBOL equivalent for at least one full billing/renewal cycle, diffing output before treating Salesforce as authoritative.
 
 Acceptance Criteria:
-- Diff process defined comparing legacy flat-file extracts to Salesforce Correspondence__c records / generated files, per wave
+- Diff process defined comparing legacy flat-file extracts to Salesforce Correspondence_Log__c records / generated files, per wave
 - Sign-off obtained per program family before cutover
-- Data-quality edge cases the legacy code already handles (e.g. all-zero phone numbers, missing country codes) confirmed as carried over correctly",,COBOL-to-RevCloud Migration,High,"migration,testing,validation",13,To Do
-Story,Cutover & Decommission Legacy COBOL Jobs,"Switch the notification pickup to source from the Salesforce/MOVEit-delivered files, retire the corresponding JCL schedule per program, and keep each COBOL program dormant for one full cycle before removal.
+- Data-quality edge cases the legacy code already handles (e.g. all-zero phone numbers, missing country codes) confirmed as carried over correctly
+- Known real-org data-quality gaps accounted for, not assumed clean: Asset.Status null on 97% of Assets, Asset.CLUB_CODE__c never fires (use Club__c instead), Asset.Member_Number__c 53% blank",,COBOL-to-RevCloud Migration,High,"migration,testing,validation",13,To Do
+Story,Cutover & Decommission Legacy COBOL Jobs,"Switch the notification pickup to source from the Salesforce-generated extracts feeding into the existing AFT/MOVEit pipeline, retire the corresponding JCL schedule per program, and keep each COBOL program dormant for one full cycle before removal.
 
 Acceptance Criteria:
-- Downstream file consumer repointed to the Salesforce-generated extracts with no format changes required (or format changes coordinated in advance)
+- Salesforce-generated extracts confirmed compatible with the existing Stage 2 encrypt/transfer job's expected input, with no format changes required (or format changes coordinated in advance)
 - JCL schedule retired per program family only after its parallel-run sign-off
 - Rollback plan documented in case a retired program needs to be reactivated during the dormancy period",,COBOL-to-RevCloud Migration,Medium,"migration,cutover",5,To Do
