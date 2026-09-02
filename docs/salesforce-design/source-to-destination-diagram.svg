@@ -1,0 +1,94 @@
+<svg viewBox="0 0 1560 640" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Two source tracks — legacy mainframe COBOL/DB2 and target Salesforce Revenue Cloud — both feed the same AFT staging and MOVEit-encrypted relay step, which very likely delivers into Salesforce Marketing Cloud. The legacy track's connection to AFT is solid and confirmed; the target track's connection is dashed, marked as an unresolved open question.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1A2118"/>
+    </marker>
+    <marker id="arrow-open" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9A3B2E"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1560" height="640" fill="#EFF1EA"/>
+
+  <text x="40" y="36" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1A2118">Source &#8594; Destination: Membership Communications Pipeline</text>
+  <text x="40" y="58" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#51594C">Two source tracks, one shared destination pipe. The mainframe track is live today; the Salesforce track is the migration target.</text>
+
+  <!-- Lane labels -->
+  <text x="40" y="98" font-family="Consolas, monospace" font-size="12" font-weight="700" letter-spacing="1" fill="#8A5C16">LEGACY &#8212; LIVE TODAY</text>
+  <text x="40" y="308" font-family="Consolas, monospace" font-size="12" font-weight="700" letter-spacing="1" fill="#1F5C74">TARGET &#8212; MIGRATED STATE</text>
+
+  <!-- ===== LEGACY LANE (y center 130) ===== -->
+  <rect x="40" y="105" width="200" height="60" fill="#EFDFB8" stroke="#8A5C16" stroke-width="1.5"/>
+  <text x="140" y="130" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">DB2 tables</text>
+  <text x="140" y="148" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">household, member, product-detail</text>
+
+  <line x1="240" y1="135" x2="278" y2="135" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="259" y="122" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">cursors</text>
+
+  <rect x="280" y="105" width="200" height="60" fill="#EFDFB8" stroke="#8A5C16" stroke-width="1.5"/>
+  <text x="380" y="130" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">10 COBOL batch programs</text>
+  <text x="380" y="148" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">MD021EX, MD022*, MD134ML, MD572EM, MD058CB</text>
+
+  <line x1="480" y1="135" x2="518" y2="135" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="499" y="122" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">WRITE record</text>
+
+  <rect x="520" y="105" width="200" height="60" fill="#EFDFB8" stroke="#8A5C16" stroke-width="1.5"/>
+  <text x="620" y="130" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">Flat file per run</text>
+  <text x="620" y="148" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">fixed-width / CSV / semicolon</text>
+
+  <!-- Legacy -> shared (solid, confirmed) -->
+  <path d="M 720 145 L 780 145 L 800 210" fill="none" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ===== TARGET LANE (y center 340) ===== -->
+  <rect x="40" y="315" width="200" height="60" fill="#D3E6EA" stroke="#1F5C74" stroke-width="1.5"/>
+  <text x="140" y="340" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">Revenue Cloud objects</text>
+  <text x="140" y="358" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">Order, OrderItem, Asset, Person Account</text>
+
+  <line x1="240" y1="345" x2="278" y2="345" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="259" y="332" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">SOQL</text>
+
+  <rect x="280" y="315" width="200" height="60" fill="#D3E6EA" stroke="#1F5C74" stroke-width="1.5"/>
+  <text x="380" y="336" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">Batch / Queueable Apex</text>
+  <text x="380" y="354" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">RenewalEligibilityRules-gated</text>
+
+  <line x1="480" y1="345" x2="518" y2="345" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="499" y="332" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">queueX()</text>
+
+  <rect x="520" y="315" width="200" height="60" fill="#D3E6EA" stroke="#1F5C74" stroke-width="1.5"/>
+  <text x="620" y="336" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">Extract file per run</text>
+  <text x="620" y="354" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">flush() &#8212; same column layout</text>
+
+  <!-- Target -> shared (DASHED, unresolved — the one claim this diagram carries) -->
+  <path d="M 720 335 L 780 335 L 800 260" fill="none" stroke="#9A3B2E" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-open)"/>
+  <text x="748" y="300" text-anchor="middle" font-family="Consolas, monospace" font-size="10" font-weight="700" fill="#9A3B2E">HOW? &#8212; unresolved</text>
+  <text x="748" y="313" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#9A3B2E">Apex is HTTPS-only; can't write</text>
+  <text x="748" y="325" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#9A3B2E">to the staging file share directly</text>
+
+  <!-- ===== SHARED DESTINATION LANE (y center 235) ===== -->
+  <rect x="800" y="205" width="200" height="60" fill="#E3E7DA" stroke="#51594C" stroke-width="1.5"/>
+  <text x="900" y="230" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">AFT Stage 1</text>
+  <text x="900" y="248" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">local staging, plaintext</text>
+
+  <line x1="1000" y1="235" x2="1038" y2="235" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1019" y="222" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">predecessor</text>
+
+  <rect x="1040" y="205" width="200" height="60" fill="#E3E7DA" stroke="#51594C" stroke-width="1.5"/>
+  <text x="1140" y="230" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">AFT Stage 2 &#8594; MOVEit</text>
+  <text x="1140" y="248" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">PGP-encrypts, relays (MOVEit can self-encrypt)</text>
+
+  <line x1="1240" y1="235" x2="1278" y2="235" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1259" y="222" text-anchor="middle" font-family="Consolas, monospace" font-size="9" fill="#51594C">.pgp file</text>
+
+  <rect x="1280" y="205" width="240" height="60" fill="#E3E7DA" stroke="#51594C" stroke-width="1.5"/>
+  <text x="1400" y="230" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1A2118">Salesforce Marketing Cloud</text>
+  <text x="1400" y="248" text-anchor="middle" font-family="Consolas, monospace" font-size="10" fill="#51594C">MobileConnect/Email Studio (likely, unconfirmed)</text>
+
+  <!-- Legend -->
+  <line x1="40" y1="590" x2="80" y2="590" stroke="#1A2118" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="90" y="594" font-family="Consolas, monospace" font-size="11" fill="#1A2118">confirmed mechanism</text>
+  <line x1="260" y1="590" x2="300" y2="590" stroke="#9A3B2E" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-open)"/>
+  <text x="310" y="594" font-family="Consolas, monospace" font-size="11" fill="#9A3B2E">unresolved, needs confirmation</text>
+
+  <text x="40" y="622" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#51594C">Both the legacy mainframe track and the target Salesforce track terminate at the same AFT/MOVEit pipe &#8212; the migration changes the source, not the destination.</text>
+</svg>
