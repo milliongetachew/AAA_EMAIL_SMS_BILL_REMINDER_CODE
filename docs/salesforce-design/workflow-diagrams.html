@@ -1,0 +1,472 @@
+<title>Membership Migration Workflows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #EFF1EA;
+    --surface: #E3E7DA;
+    --surface-2: #D9DECB;
+    --text: #1A2118;
+    --text-soft: #51594C;
+    --border: #C7CDB8;
+    --legacy: #8A5C16;
+    --legacy-soft: #EFDFB8;
+    --cloud: #1F5C74;
+    --cloud-soft: #D3E6EA;
+    --danger: #9A3B2E;
+    --danger-soft: #F0DAD3;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #13160E;
+      --surface: #1C2016;
+      --surface-2: #252B1C;
+      --text: #E9ECDF;
+      --text-soft: #A9B29B;
+      --border: #333A29;
+      --legacy: #D6A24E;
+      --legacy-soft: #3A2E14;
+      --cloud: #6FB6CC;
+      --cloud-soft: #16323B;
+      --danger: #E0968A;
+      --danger-soft: #3B211C;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #13160E;
+    --surface: #1C2016;
+    --surface-2: #252B1C;
+    --text: #E9ECDF;
+    --text-soft: #A9B29B;
+    --border: #333A29;
+    --legacy: #D6A24E;
+    --legacy-soft: #3A2E14;
+    --cloud: #6FB6CC;
+    --cloud-soft: #16323B;
+    --danger: #E0968A;
+    --danger-soft: #3B211C;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  .page {
+    max-width: 1220px;
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 6rem;
+    display: grid;
+    grid-template-columns: 210px minmax(0, 900px);
+    gap: 3rem;
+    align-items: start;
+  }
+
+  @media (max-width: 1020px) {
+    .page { grid-template-columns: minmax(0, 1fr); }
+    .toc { display: none; }
+  }
+
+  .masthead {
+    grid-column: 1 / -1;
+    max-width: 900px;
+    margin: 0 auto 1rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-soft);
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+  }
+
+  .eyebrow::before {
+    content: "";
+    width: 0.55rem;
+    height: 0.55rem;
+    background: var(--cloud);
+    display: inline-block;
+  }
+
+  h1 {
+    font-family: var(--font-mono);
+    font-size: clamp(1.9rem, 4vw, 2.6rem);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.14;
+    margin: 0 0 0.9rem;
+    text-wrap: balance;
+  }
+
+  .dek {
+    font-size: 1.05rem;
+    color: var(--text-soft);
+    max-width: 66ch;
+    margin: 0;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1.4rem;
+    margin-top: 1.6rem;
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    color: var(--text-soft);
+  }
+
+  .swatch {
+    width: 0.7rem;
+    height: 0.7rem;
+    flex: none;
+  }
+
+  .swatch.resolved { background: var(--cloud); }
+  .swatch.unresolved { background: var(--danger); }
+  .swatch.legacy { background: var(--legacy); }
+
+  .toc {
+    position: sticky;
+    top: 2.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+
+  .toc-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-soft);
+    font-weight: 600;
+    margin-bottom: 0.9rem;
+  }
+
+  .toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  .toc a {
+    display: block;
+    padding: 0.4rem 0 0.4rem 0.9rem;
+    margin-left: -1px;
+    border-left: 1px solid transparent;
+    color: var(--text-soft);
+    text-decoration: none;
+  }
+
+  .toc a:hover, .toc a:focus-visible { color: var(--text); border-left-color: var(--cloud); }
+  .toc .n { color: var(--text-soft); margin-right: 0.5rem; }
+
+  main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  .pipeline-note {
+    grid-column: 1 / -1;
+    max-width: 900px;
+    margin: 0 auto;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--danger);
+    background: var(--surface);
+    padding: 1.3rem 1.5rem;
+  }
+
+  .pipeline-note .tag {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--danger);
+    margin-bottom: 0.6rem;
+    display: block;
+  }
+
+  .pipeline-note p { margin: 0 0 0.7rem; font-size: 0.94rem; color: var(--text-soft); }
+  .pipeline-note p:last-child { margin-bottom: 0; }
+  .pipeline-note strong { color: var(--text); font-weight: 600; }
+  .pipeline-note code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--surface-2);
+    padding: 0.05rem 0.35rem;
+  }
+
+  section { scroll-margin-top: 2rem; }
+
+  .section-head {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--cloud);
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .section-head .idx { font-variant-numeric: tabular-nums; color: var(--text-soft); }
+
+  h2.title {
+    font-family: var(--font-sans);
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+
+  .diagram-card {
+    border: 1px solid var(--border);
+    background: #ffffff;
+    padding: 1.4rem;
+    overflow-x: auto;
+    margin-bottom: 1.2rem;
+  }
+
+  :root:not([data-theme="light"]) .diagram-card { background: var(--surface); }
+  :root[data-theme="dark"] .diagram-card { background: var(--surface); }
+
+  .diagram-card pre.mermaid {
+    margin: 0;
+    min-width: 640px;
+  }
+
+  .caption {
+    font-size: 0.92rem;
+    color: var(--text-soft);
+    max-width: 74ch;
+    border-left: 2px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  .caption strong { color: var(--text); font-weight: 600; }
+  .caption code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--surface-2);
+    padding: 0.05rem 0.35rem;
+  }
+
+  footer {
+    grid-column: 1 / -1;
+    max-width: 900px;
+    margin: 1rem auto 0;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: var(--text-soft);
+  }
+</style>
+
+<div class="page">
+
+  <div class="masthead">
+    <div class="eyebrow">ACSC Membership Communications Platform</div>
+    <h1>Revenue Cloud Migration — Workflow Diagrams</h1>
+    <p class="dek">The four target-state flows mapping each legacy COBOL program to its Salesforce Revenue Cloud replacement, current as of the real data-dictionary and MOVEit/AFT corrections.</p>
+    <div class="legend">
+      <span class="legend-item"><span class="swatch resolved"></span>Resolved against a real, confirmed field</span>
+      <span class="legend-item"><span class="swatch unresolved"></span>Genuinely unresolved — flagged, not guessed</span>
+      <span class="legend-item"><span class="swatch legacy"></span>Legacy COBOL behavior being replaced</span>
+    </div>
+  </div>
+
+  <nav class="toc">
+    <div class="toc-label">Diagrams</div>
+    <ol>
+      <li><a href="#d1"><span class="n">01</span>Renewal SMS/Push</a></li>
+      <li><a href="#d2"><span class="n">02</span>Billing Email</a></li>
+      <li><a href="#d3"><span class="n">03</span>Card-Decline / Dunning</a></li>
+      <li><a href="#d4"><span class="n">04</span>EFT Reconciliation</a></li>
+    </ol>
+  </nav>
+
+  <div class="pipeline-note">
+    <span class="tag">Shared across every diagram — the flush() / MOVEit step</span>
+    <p>Every diagram below ends the same way: <code>NotificationGatewayService.flush()</code> uploads the run's extract file(s) toward the existing AFT/MOVEit delivery pipeline. The real Control-M/AFT job configuration shows this is <strong>two stages</strong> — a plaintext file lands in a staging drop point, then a Stage-2 job PGP-encrypts it and relays it via MOVEit. The PGP key is named for Salesforce Marketing Cloud (<code>salesforce-prod-042325-1</code>, "sfmc xfer"), and the real SMS extract uses SFMC MobileConnect-specific columns — strong evidence <strong>SFMC is the true final consumer</strong>, not MOVEit itself.</p>
+    <p><strong>Confirmed:</strong> MOVEit itself is capable of PGP encryption, so Stage 2 may well be MOVEit's own automation. <strong>Still open:</strong> the exact endpoint, credential, and whether a new task needs provisioning for Salesforce-originated files — see <code>high-level-design.md</code> §4 and <code>moveit-aft-reference.md</code> before assuming a specific shape.</p>
+  </div>
+
+  <main>
+
+    <section id="d1">
+      <div class="section-head"><span class="idx">01</span> Renewal notifications</div>
+      <h2 class="title">Renewal SMS/Push Eligibility Batch</h2>
+      <div class="diagram-card">
+<pre class="mermaid">
+flowchart TD
+    A["MembershipRenewalNotificationScheduler<br/>(Schedulable, cron per rule/run window)"] --> B["MembershipRenewalNotificationBatch.start()<br/>QueryLocator: Assets in renewal window<br/>filtered by Renewal_Notification_Rule__mdt<br/>(club, bill-plan, billing-event, day-offset)"]
+    B --> C["execute(List&lt;Asset&gt; scope)"]
+    C --> D{"RenewalEligibilityRules.isEligible(asset, rule)"}
+    D -->|"Requires_No_Payment_In_Transit__c<br/>= true"| E{"UNRESOLVED: blng__Payment__c<br/>status = Processing/Pending?<br/>(no Billing/Payment object confirmed<br/>in data-dictionary audit)"}
+    E -->|"Yes (PIT)"| SKIP1["Skip + count<br/>(replaces WS-PIT-COUNT)"]
+    E -->|"No"| F{"Person Account Mobile_Status__pc<br/>= 'Valid' (SMS) /<br/>Email_Status__pc = 'Valid' (Push/email)?<br/>(deliverability picklist, not a null check)"}
+    F -->|"No"| SKIP2["Skip + count<br/>(replaces WS-NO-CELL-COUNT)"]
+    F -->|"Yes"| CAMP{"Campaign_Code__c query:<br/>Club_Code__c match AND Status__c='Active'<br/>AND today BETWEEN Effective_Date__c/<br/>Expiration_Date__c?<br/>(real object — first actual enforcement;<br/>replaces MD022EC whitelist)"}
+    CAMP -->|"No match"| SKIP5["Skip + count<br/>(replaces MD022EC campaign-code filter)"]
+    CAMP -->|"Match, or rule has<br/>no campaign restriction"| G{"Requires_SMS_Consent__c = true?"}
+    G -->|"Yes, no consent<br/>(Account.Consent_for_SMS__c = false)"| SKIP3["Skip SMS leg only<br/>(replaces WS-NO-CONSENT-COUNT);<br/>md022cc rule has this = false"]
+    G -->|"No, or consented"| H{"Requires_Amount_Due_Gt_Zero__c<br/>= true?"}
+    H -->|"Yes, amount = 0"| SKIP4["Skip + count<br/>(replaces WS-NO-AMOUNT-COUNT)"]
+    H -->|"No, or amount &gt; 0"| I["NotificationGatewayService.queueSms() /<br/>.queuePush()<br/>(per Requires_Push__c) — appends to<br/>today's in-memory extract, no callout yet"]
+    I --> J["CorrespondenceLogger.log()<br/>(logged as row queued into the extract,<br/>not confirmed delivered)"]
+    C --> K["finish(): summary counts +<br/>NotificationGatewayService.flush()<br/>(uploads today's SMS/Push extract file(s)<br/>to the AFT staging hand-off point —<br/>mechanism UNRESOLVED;<br/>Stage-2 job, possibly MOVEit's own<br/>automation, PGP-encrypts + relays via<br/>MOVEit, likely to SFMC)"]
+
+    classDef resolved fill:#D3E6EA,stroke:#1F5C74,color:#12211f
+    classDef unresolved fill:#F0DAD3,stroke:#9A3B2E,color:#3a1712
+    class F,CAMP resolved
+    class E unresolved
+</pre>
+      </div>
+      <p class="caption">The legacy programs differ mainly in <em>which</em> gates apply and in what order — not the overall shape of the flow. Pushing those differences into <code>Renewal_Notification_Rule__mdt</code> lets one batch class serve all six programs (<code>MD021EX</code>, <code>MD022EX</code>, <code>MD022ER</code>, <code>MD022EC</code>, <code>MD022LP</code>, <code>md022cc</code>). <code>MD022ZA</code> is excluded because its eligibility logic lived entirely in an out-of-scope upstream job. The payment-in-transit gate (node <strong>E</strong>) remains genuinely unresolved, while the deliverability gate (<strong>F</strong>) and campaign-code gate (<strong>CAMP</strong>) are corrected to real, confirmed org fields.</p>
+    </section>
+
+    <section id="d2">
+      <div class="section-head"><span class="idx">02</span> Billing correspondence</div>
+      <h2 class="title">Billing Email Flow (MD134ML)</h2>
+      <div class="diagram-card">
+<pre class="mermaid">
+flowchart TD
+    A["Billing event: Asset reaches a state<br/>requiring monthly-pay correspondence<br/>(replaces EIP extract file MDEIPIN;<br/>UNRESOLVED trigger source — no Billing/<br/>Invoice object confirmed)"] --> B["BillingEmailQueueable.execute()<br/>(Queueable, Database.AllowsCallouts)"]
+    B --> C["resolveCorrespondenceType(asset)<br/>(stand-in for MD607BR)"]
+    C --> D{"Correspondence type = email AND<br/>Person Account has usable email?<br/>(PersonEmail present AND<br/>Email_Status__pc != Invalid/Declined)"}
+    D -->|"No"| END1["No email produced"]
+    D -->|"Yes"| E{"Letter code = '139'<br/>equivalent?"}
+    E -->|"No"| G["buildEmailPayload()<br/>(replaces B1000-PRODUCE-EMAIL<br/>field mapping)"]
+    E -->|"Yes"| F{"isSuppressedBySelfServiceChange(asset)<br/>— was a matching web-originated<br/>change made TODAY?<br/>(replaces B0200-DO-NOT-SEND-EMAIL /<br/>INC943560)"}
+    F -->|"Yes, suppress"| END2["Do not send<br/>(letter-139 web-suppression rule)"]
+    F -->|"No"| G
+    G --> H["NotificationGatewayService.queueEmail()<br/>(appends to today's in-memory email<br/>extract, no callout yet)"]
+    H --> I["CorrespondenceLogger.log()<br/>(type '639' for letter 139;<br/>writes to Correspondence_Log__c (audit)<br/>AND appends '639' to<br/>Asset.Correspondence__c multipicklist)"]
+    I --> J2["End of execute(): flush()<br/>uploads today's email extract file<br/>to the AFT staging hand-off point —<br/>mechanism UNRESOLVED; Stage-2 job<br/>PGP-encrypts + relays via MOVEit<br/>to the downstream EBIZ/EIP processor"]
+
+    classDef resolved fill:#D3E6EA,stroke:#1F5C74,color:#12211f
+    classDef unresolved fill:#F0DAD3,stroke:#9A3B2E,color:#3a1712
+    class D resolved
+    class A unresolved
+</pre>
+      </div>
+      <p class="caption">The letter-139 web-self-service suppression rule (<code>INC943560</code>) is preserved as an explicit gate — the one clearly business-critical special case in <code>MD134ML</code>. The legacy program only logs correspondence history for letter 139, not "all email correspondence" as a 2025 change ticket (<code>MEM-481279</code>) claimed; this diagram reflects the code's <em>actual</em> behavior, and that discrepancy needs a business decision before Revenue Cloud logs all billing emails or only the 139-equivalent subset.</p>
+    </section>
+
+    <section id="d3">
+      <div class="section-head"><span class="idx">03</span> Payment failure</div>
+      <h2 class="title">Card-Decline / Dunning Flow (MD572EM)</h2>
+      <div class="diagram-card">
+<pre class="mermaid">
+sequenceDiagram
+    participant PG as Payment Gateway
+    participant PE as Card_Decline_Event__e
+    participant H as CardDeclineDunningHandler
+    participant EL as RenewalEligibilityRules
+    participant NG as NotificationGatewayService
+    participant CL as CorrespondenceLogger
+
+    PG->>PE: Publish decline event
+    PE->>H: Enqueue handler
+    H->>EL: getClubRules(clubCode)
+    H->>EL: getCurrentTermExpiration(asset)
+    H->>EL: getYearsOfService(asset)
+    H->>EL: getAmountDue(billingAccount)
+    alt amount due is zero
+        H->>CL: log Suppressed, AlreadyPaid
+    else still autopay and unpaid
+        H->>CL: log Skipped, RetryNextRun
+    else eligible
+        H->>EL: getMembershipNumber(asset)
+        H->>EL: getUsableEmail(personAccount)
+        alt no usable email
+            H->>CL: log Skipped, NoEmail
+        else usable email
+            H->>NG: queueEmail(template, mergeFields)
+            NG-->>H: queued
+            H->>CL: log Sent, CardDecline
+        end
+    end
+    H->>NG: flush()
+    NG-->>H: upload result
+    Note over H,CL: getProcessingDate() runs once at handler start
+</pre>
+      </div>
+      <p class="caption"><code>MD572EM</code>'s work-table-draining loop (fetch row, delete row, commit) has no direct Apex equivalent — Platform Events are consumed once, not left in a queue to retry. The "skip and retry next run" branch is modeled as a logged, no-op outcome; if true multi-day retry semantics are required, the recommended pattern is a scheduled batch re-query of whatever the org's confirmed payment/decline status source turns out to be after N days, rather than relying on Platform Event redelivery.</p>
+      <p class="caption" style="margin-top:0.8rem">Each call maps to specific legacy logic: <code>getClubRules</code> replaces <code>MD699BR</code>, sourced from the working <code>Asset.Club__c</code> formula (not the broken <code>CLUB_CODE__c</code>). <code>getCurrentTermExpiration</code> replaces <code>MD380MA</code> via <code>Asset.CurrentLifecycleEndDate</code> — exact legacy match unconfirmed. <code>getYearsOfService</code> replaces <code>MD642BR</code>. <strong>getAmountDue replaces MD610BR and remains unresolved</strong> — no Billing/Payment object is confirmed anywhere in the org audit. <code>getMembershipNumber</code> is resolved — <code>Asset.Member_Number__c</code>, populated by the real <code>RVNMembershipNo</code> Apex (53% blank is a data-backfill gap, not an algorithm gap). <code>getUsableEmail</code> replaces <code>MC501BCD</code>, reading <code>PersonEmail</code> + <code>Email_Status__pc</code> on the Person Account directly, not a separate Contact. The final <code>flush()</code> hand-off mechanism is unresolved — see the shared note above the diagrams.</p>
+    </section>
+
+    <section id="d4">
+      <div class="section-head"><span class="idx">04</span> EFT reconciliation</div>
+      <h2 class="title">EFT Reject / Bill-Plan Reconciliation Flow (MD058CB)</h2>
+      <div class="diagram-card">
+<pre class="mermaid">
+flowchart TD
+    A["EFT middleware: card-auto-update reject<br/>(replaces CAUCCREJ file)"] --> B["Insert Eft_Cau_Reject__c<br/>(Processed__c = false)"]
+    B --> C["EftReconciliationBatch.start()<br/>QueryLocator: Eft_Cau_Reject__c<br/>WHERE Processed__c = false"]
+    C --> D["execute(List&lt;Eft_Cau_Reject__c&gt; scope)"]
+    D --> E["Resolve Asset for club + membership number<br/>(replaces 1600-CALL-MD380MA);<br/>Asset.Club__c (working formula, NOT the<br/>broken CLUB_CODE__c), Asset.Bill_Plan__c<br/>(real formula)"]
+    E --> F{"Current bill plan<br/>still AC (autopay)?<br/>(replaces 8200-CHECK-BILLPLAN-AC;<br/>Asset.Bill_Plan__c = 'AC')"}
+    F -->|"No — bill plan changed<br/>since the reject was generated"| G["Write out-of-sync Correspondence_Log__c<br/>record (replaces 2100-WRITE-SYNC-FILE /<br/>EMS_WORK_CAU insert, job MD58SYNC)"]
+    F -->|"Yes, still AC"| H{"Next billing-cycle bill plan<br/>still AC?<br/>(replaces 8500-CHECK-BILLPLN-NXTEVT;<br/>UNRESOLVED — no confirmed 'next cycle<br/>bill plan' field exists on Asset)"}
+    H -->|"No"| G
+    H -->|"Yes"| I{"Account.Out_Of_Territory__c = true?<br/>(replaces 8600-GET-LODGE-TYPE /<br/>MC501BCD lodge codes — real confirmed<br/>field replaces the guessed equivalent)"}
+    I -->|"Yes"| J["Write out-of-territory Correspondence_Log__c<br/>record (replaces 2300-WRITE-TERR-FILE,<br/>job MD58TERR)"]
+    I -->|"No"| K{"Days to expiration &le; 23?<br/>(replaces 8250-CHECK-NBR-DAYS-EXPIRE,<br/>UT020DT, MEM-481325; Asset.CurrentLifecycleEndDate,<br/>exact legacy match UNCONFIRMED)"}
+    K -->|"Yes"| L["Suppress printed-letter equivalent<br/>but still allow digital notifications<br/>(DO-NOT-PRINT)"]
+    K -->|"No"| M["Digital notifications proceed<br/>normally (DO-PRINT)"]
+    L --> N["NotificationGatewayService.queueSms()/<br/>.queuePush()/.queueEmail() per channel —<br/>appends to today's in-memory extract<br/>(replaces 1900-CREATE-OUTPUT-FILES,<br/>MEM-480905); destinations sourced from<br/>PersonMobilePhone/PersonEmail, gated by<br/>Mobile_Status__pc/Email_Status__pc"]
+    M --> N
+    N --> O["CorrespondenceLogger.log() per channel:<br/>types 768/868/668 (replaces 1970-UPDATE-<br/>CORR-HIST / MD300MA, MEM-481283; writes to<br/>Correspondence_Log__c AND appends the code<br/>to Asset.Correspondence__c)"]
+    O --> P["Mark Eft_Cau_Reject__c.Processed__c = true"]
+    G --> P
+    J --> P
+    P --> Q["finish(): NotificationGatewayService.flush()<br/>uploads today's SMS/Push/Email extract<br/>file(s) to the AFT staging hand-off point —<br/>mechanism UNRESOLVED; Stage-2 job PGP-<br/>encrypts + relays via MOVEit, likely SFMC"]
+
+    classDef resolved fill:#D3E6EA,stroke:#1F5C74,color:#12211f
+    classDef unresolved fill:#F0DAD3,stroke:#9A3B2E,color:#3a1712
+    class F,I resolved
+    class H,K unresolved
+</pre>
+      </div>
+      <p class="caption">The historical "flip household bill plan back to AM and queue a printed letter" branch is intentionally <strong>omitted</strong>, matching its dormant/disabled state in current production (<code>MEM-480905</code>). <code>MD058CB</code>'s mainframe checkpoint/restart and <code>GO TO</code>-based deadlock retry loop are replaced by Batch Apex's native per-scope transaction boundary and the job's natural re-runnability over <code>Eft_Cau_Reject__c</code> rows still marked unprocessed — a deliberate semantic change that should be validated against actual at-least-once/exactly-once processing requirements.</p>
+    </section>
+
+  </main>
+
+  <footer>Companion to high-level-design.md · docs/salesforce-design/workflows.md, rendered</footer>
+
+</div>
