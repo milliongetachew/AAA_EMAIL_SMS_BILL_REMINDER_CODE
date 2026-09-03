@@ -152,3 +152,12 @@ rule tables, the `MRD910C*` restart copybooks used by `MD058CB`,
 set; where a program's behavior depends on one of those, it is called
 out explicitly in that program's "Ambiguous / Environment-Dependent
 Notes" section rather than guessed at.
+
+**Known gap — an 11th program, not reviewed:** the team's own
+communication inventory (`docs/salesforce-design/communication-jobs-reference.md`,
+sourced from `Display Mbsp Communication Innovation Planning.xlsx`)
+identifies **`MD065CC`** ("Annual CC Decline" — Email + SMS + Push) as a
+real production program. Its source was not part of `attachments/` and was
+never reviewed here — its behavior is unknown and should not be assumed
+similar to `MD572EM` or `md022cc` (the other decline-handling programs)
+without reading its actual source.

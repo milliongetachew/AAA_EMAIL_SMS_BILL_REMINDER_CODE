@@ -91,7 +91,14 @@ vs. a parallel one) — confirm with whoever administers MOVEit before
   - `MD022` PUSH INT77 (same −77-day window, Push channel) → `TRAN_PUSH_MEM_ZEROAUTH_MINUS_77DAYS_%%$DATE..csv`
 - **AFT/CTM job pair naming**: `MRD<job-number><O|E>_AFT_<TYPE>_<NAME>` —
   `O` = write-to-staging job, `E` = encrypt-and-transfer job, linked via
-  `Required Predecessor`.
+  `Required Predecessor`. Confirmed by a much larger real sample (21 AFT
+  jobs, not just the handful in the original screenshots) in
+  `docs/salesforce-design/communication-jobs-reference.md` — see that doc
+  for the full job/program/output-file table. That sample also surfaces
+  that **`MD572EM`'s email output is split per state/region** (9 states
+  across two chained AFT jobs, `MRD1928O`→`MRD1929O`), not one national
+  file as the earlier design assumed — worth reflecting in
+  `CardDeclineDunningHandler`'s eventual real implementation.
 - **MOVEit destination path convention**: `/users/<QUEUE_NAME>/OUTBOUND/` —
   only `SMSPUSH` was observed directly; other channels (email, CAU) likely
   follow the same `/users/<QUEUE>/OUTBOUND/` pattern with a different queue

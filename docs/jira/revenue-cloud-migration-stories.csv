@@ -27,6 +27,15 @@ Acceptance Criteria:
 - Asset -> campaign-code lineage gap resolved (Asset does not currently carry a campaign-code identifier forward from the Order/OrderItem)
 
 Status note: corrected against the real org's field-verified data dictionary (docs/salesforce-design/data-dictionary-reference.md) - the original CPQ/Billing (SBQQ/blng) assumption was wrong and has been replaced throughout. Membership-number generation (the MD999CK replacement) is confirmed already implemented in the org (RVNMembershipNo Apex) - remaining gap there is a 53%-blank data backfill, not a design gap. Campaign_Code__c/Campaign_Action__c exist as real objects but have zero automation today.",,COBOL-to-RevCloud Migration,High,"migration,architecture,revenue-cloud",13,In Review
+Story,Document MD065CC (Annual CC Decline) - Scope Gap,"The team's own communication inventory (docs/salesforce-design/communication-jobs-reference.md, sourced from Display Mbsp Communication Innovation Planning.xlsx) identifies MD065CC as a real production program (Annual CC Decline - Email + SMS + Push) that was never part of the 10-file COBOL source review. Its behavior is unknown and should not be assumed similar to MD572EM or md022cc, the other decline-handling programs already documented.
+
+Acceptance Criteria:
+- Obtain MD065CC's COBOL source
+- Document it the same way as the other 10 programs (docs/cobol-legacy/md065cc.md): summary, I/O, data structures, control flow, modification history
+- Determine its relationship to MD572EM and md022cc (distinct communication or overlapping population?) before designing any Apex equivalent
+- Update high-level-design.md's Apex Class Inventory once its scope is understood
+
+Status note: new - identified 2026-09-03 from the real communication/jobs inventory, not from the COBOL source review. Source not yet obtained.",,COBOL-to-RevCloud Migration,Medium,"migration,discovery,scope-gap",5,To Do
 Story,Resolve Billing/Payment Data Source,"No Invoice/Payment/BillingAccount object of any kind appears in the real org's field-verified data dictionary (7 objects audited: Order, OrderItem, Asset, Account, Person Account, Campaign_Code__c, Campaign_Action__c). This blocks the amount-due (MD610BR-equivalent) and payment-in-transit (FN435BT-equivalent) logic in the renewal batch and the card-decline trigger source for the dunning handler.
 
 Acceptance Criteria:
@@ -83,6 +92,7 @@ Acceptance Criteria:
 - Card_Decline_Event__e platform event defined - trigger source blocked on 'Resolve Billing/Payment Data Source' (no confirmed Payment object exists to transition status on)
 - CardDeclineDunningHandler deployed, covering the shared subroutine equivalents (club rules, term expiration, years of service, amount due, membership number, contact/email lookup), using Person Account fields
 - Retry semantics decided: legacy work-table 'leave row for next run' behavior needs an explicit re-query pattern, since Platform Events are not retried the same way
+- Per-state/region output split accounted for (real AFT job config shows MD572EM produces 9 separate state files across two chained jobs, not one national file) - confirm whether this state split needs to be preserved in the Salesforce-generated extract
 - Parity-tested against legacy MD572EM output
 
 Status note: design scaffold exists (force-app/main/default/classes/CardDeclineDunningHandler.cls), corrected to Person Account fields - still blocked on a confirmed Payment/Billing object to trigger from.",,COBOL-to-RevCloud Migration,Medium,"migration,apex,platform-events,blocked",8,To Do
