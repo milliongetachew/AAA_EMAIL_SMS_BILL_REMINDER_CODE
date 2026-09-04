@@ -1,0 +1,80 @@
+public class AMSMoveitDynamicRouter {
+
+    /**
+     * Pulls a file from Salesforce ContentVersion and prepares it for MOVEit via Multipart Form-Data.
+     * 
+     * @param contentVersionId The Salesforce ID of the ContentVersion record containing the file.
+     * @param folderId The target folder numerical ID in MOVEit.
+     */
+    @AuraEnabled
+    public static void routeFileToMoveIt(Id contentVersionId, String folderId) {
+        try {
+            // 1. Fetch file payload and metadata from Salesforce
+            ContentVersion fileRecord = [
+                SELECT Title, PathOnClient, VersionData 
+                FROM ContentVersion 
+                WHERE Id = :contentVersionId 
+                LIMIT 1
+            ];
+            
+            Blob fileBody = fileRecord.VersionData;
+            
+            // 2. Define the exact path routing rules you provided
+            String sourceMetadata = '%%PGPTemp.\\MRD\\aaa1ACE.in';
+            String destinationPath = '/Users/Zipxmtm_CA_to_telematch/Transmit/';
+            String fileName = fileRecord.Title + '.' + fileRecord.PathOnClient.substringAfterLast('.');
+
+            // 3. Initialize HTTP Elements
+            Http http = new Http();
+            HttpRequest req = new HttpRequest();
+            
+            // Format endpoint through Named Credentials
+            req.setEndpoint('callout:MOVEit_Server/api/v1/folders/' + folderId + '/files');
+            req.setMethod('POST');
+            
+            // 4. Construct Multipart/Form-Data Boundary
+            String boundary = '---------------------------' + DateTime.now().getTime();
+            req.setHeader('Content-Type', 'multipart/form-data; boundary=' + boundary);
+            
+            // 5. Assemble Request Body with custom mapping parameters
+            String bodyHeader = '--' + boundary + '\r\n' +
+                                'Content-Disposition: form-data; name="source"\r\n\r\n' + sourceMetadata + '\r\n' +
+                                '--' + boundary + '\r\n' +
+                                'Content-Disposition: form-data; name="dest"\r\n\r\n' + destinationPath + '\r\n' +
+                                '--' + boundary + '\r\n' +
+                                'Content-Disposition: form-data; name="file"; filename="' + fileName + '"\r\n' +
+                                'Content-Type: application/octet-stream\r\n\r\n';
+                                
+            String bodyFooter = '\r\n--' + boundary + '--\r\n';
+            
+            // Combine structured multi-part layout text with the file's raw binary payload
+            Blob totalBody = combineMultipartBlob(bodyHeader, fileBody, bodyFooter);
+            req.setBodyAsBlob(totalBody);
+            req.setTimeout(120000);
+            
+            // 6. Fire the request
+            HttpResponse res = http.send(req);
+            
+            if (res.getStatusCode() == 201 || res.getStatusCode() == 200) {
+                System.debug('MOVEit Transfer successfully received route mapping. File deposited.');
+            } else {
+                System.debug('MOVEit Routing Error Code: ' + res.getStatusCode() + ' Info: ' + res.getBody());
+            }
+            
+        } catch (Exception e) {
+            System.debug('Failed to execute Salesforce-to-MOVEit pipeline: ' + e.getMessage());
+        }
+    }
+    
+    /**
+     * Helper utility to safely chain string headers/footers to raw file bodies without corrupting file encoding.
+     */
+    private static Blob combineMultipartBlob(String header, Blob fileData, String footer) {
+        String headerEncoded = EncodingUtil.base64Encode(Blob.valueOf(header));
+        String footerEncoded = EncodingUtil.base64Encode(Blob.valueOf(footer));
+        String fileEncoded = EncodingUtil.base64Encode(fileData);
+        
+        // Return re-assembled full payload back to Blob
+        return EncodingUtil.base64Decode(headerEncoded + fileEncoded + footerEncoded);
+    }
+}
