@@ -149,14 +149,48 @@ appear in the sample alongside a `CustId` in the legacy
 email is valid, still emit the row" behavior rather than filtering it out,
 unless the business says otherwise.
 
+## Endpoint shape confirmed (2026-09-04): a real working example
+
+The user shared a real Apex class from elsewhere in this org,
+`AMSMoveitDynamicRouter`, that performs a Salesforce-to-MOVEit file upload
+today (for a different, unrelated data flow — an address/"telematch"
+extract, not our SMS/Push/Email pipeline). This confirms the actual
+**endpoint shape**, not just a guess:
+
+| Field | Confirmed value |
+|---|---|
+| Named Credential | `callout:MOVEit_Server` (name likely, not yet verified as the literal Setup record name) |
+| Endpoint | `/api/v1/folders/{folderId}/files` |
+| Method | `POST` |
+| Body | `multipart/form-data` with three parts: `source` (a path string), `dest` (a path string), `file` (the file content) |
+
+**Still unconfirmed for our channels specifically:** the real `folderId`,
+and the real `source`/`dest` path values. The reference class's own values
+(`%%PGPTemp.\MRD\aaa1ACE.in` → `/Users/Zipxmtm_CA_to_telematch/Transmit/`)
+belong to that unrelated integration and must not be reused literally for
+SMS/Push/Email/CAU.
+
+**A real bug in the reference class, worth flagging regardless of whether
+it's adopted here:** its multipart-body helper (`combineMultipartBlob`)
+base64-encodes the header text, file bytes, and footer text *separately*,
+then concatenates the three encoded strings and base64-decodes the result.
+This does not reconstruct the original bytes correctly — base64 only
+concatenates cleanly across a boundary when every piece before the last has
+a byte length that's an exact multiple of 3, which arbitrary text/file
+content will essentially never satisfy. In practice this would corrupt the
+uploaded file. `NotificationGatewayService.buildMoveitUploadRequest()`
+avoids this by building the entire multipart body as one String first and
+converting to a `Blob` exactly once — safe because every channel's content
+here is plain text, never true binary. Worth surfacing to whoever owns
+`AMSMoveitDynamicRouter` in case it's deployed anywhere for real.
+
 ## What this changes in the Apex scaffold
 
-- `NotificationGatewayService.uploadChannelFile()`'s destination (currently
-  a placeholder `MOVEIT_UPLOAD_PATH`) is now plausibly correct in *shape* —
-  Apex calling a MOVEit-exposed HTTPS endpoint with a plaintext file body,
-  letting MOVEit's own automation apply PGP encryption — since MOVEit is
-  confirmed capable of encryption. The endpoint path, auth, and whether a
-  new task/folder needs provisioning for Salesforce-originated files are
+- `NotificationGatewayService.buildMoveitUploadRequest()` now implements the
+  confirmed endpoint shape (Named Credential, path, method, multipart
+  structure) directly. `MOVEIT_FOLDER_ID`/`MOVEIT_SOURCE_PATH`/
+  `MOVEIT_DEST_PATH` remain placeholders — the real values, and whether a
+  new task/folder needs provisioning for Salesforce-originated files, are
   still real unknowns needing a real answer from the AFT/MOVEit team, not a
   corrected guess.
 - `DELIMITER_BY_PROGRAM`'s file-format table should be replaced with the

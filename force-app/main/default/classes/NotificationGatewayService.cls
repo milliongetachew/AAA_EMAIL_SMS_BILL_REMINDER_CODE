@@ -35,12 +35,33 @@
  * MOVEit-exposed HTTPS endpoint via Named Credential, and MOVEit's own
  * automation applies PGP encryption and forwards the result onward (very
  * plausibly still to SFMC) — this is now the leading candidate for the
- * hand-off mechanism, not one of several equally-uncertain options. Still
- * open, and still needing a real answer, not a guess: the specific MOVEit
- * endpoint/API shape, credential/auth, and whether a new MOVEit task/
- * folder needs provisioning for Salesforce-originated files (reusing the
- * exact `PUB_SalesForce` task as-is vs. a parallel one) — see
- * moveit-aft-reference.md.
+ * hand-off mechanism, not one of several equally-uncertain options.
+ *
+ * FOURTH CORRECTION (2026-09-04): a real, working Apex class from
+ * elsewhere in this org (`AMSMoveitDynamicRouter`, shared by the user)
+ * confirms the ENDPOINT SHAPE for exactly this kind of integration —
+ * Named Credential `callout:MOVEit_Server`, endpoint
+ * `/api/v1/folders/{folderId}/files`, POST as `multipart/form-data` with
+ * three parts: `source` (a path string), `dest` (a path string), and
+ * `file` (the file content). This is no longer a guess; it is a proven
+ * pattern already used for a Salesforce-to-MOVEit integration in this org
+ * (a different, unrelated data flow — see `uploadChannelFile()` below for
+ * what's still unconfirmed for OUR channels specifically).
+ *
+ * That reference class also contains a real bug worth flagging regardless
+ * of whether it's ever adopted here: its `combineMultipartBlob()` helper
+ * base64-encodes the header text, file bytes, and footer text SEPARATELY
+ * and concatenates the three encoded strings before base64-decoding the
+ * result. That does not reconstruct the original bytes correctly — base64
+ * only concatenates cleanly across a boundary when the byte length of
+ * every piece before the last is an exact multiple of 3; arbitrary text/
+ * file content will not satisfy that, so the reassembled body would be
+ * corrupted in practice. This class avoids the bug entirely by building
+ * the whole multipart body as ONE string (see `buildMoveitUploadRequest()`)
+ * and converting to a `Blob` exactly once — safe here because every
+ * channel's file content is plain text (CSV/semicolon-delimited), never
+ * true binary; a channel that ever needed real binary content would need
+ * different handling, not this same shortcut.
  *
  * This class therefore does two things, corresponding to the queue/flush
  * pattern — but see the UNRESOLVED note under constraint (2) below for what
@@ -75,28 +96,25 @@
  *      candidate) or a separate job encrypts before MOVEit ever sees the
  *      file is the open hand-off question addressed in constraint (2).
  *
- *  (2) NO SFTP FROM APEX, AND NO CONFIRMED DIRECT-TO-MOVEIT HANDOFF EITHER.
- *      Apex has no raw socket / SFTP client — only HTTP(S) callouts — and it
- *      cannot write to a Windows/mainframe-local file share the way the
- *      real Stage 1 AFT job does. UNRESOLVED, same rigor as the PGP flag
- *      above: how this class's plaintext extract actually reaches the
- *      AFT/MOVEit pipeline has NOT been confirmed. Since MOVEit is
- *      confirmed capable of PGP encryption itself (see the third correction
- *      above), a direct HTTPS upload to a MOVEit-exposed endpoint — with
- *      MOVEit's own automation applying PGP encryption after this class's
- *      plaintext upload — is now the LEADING CANDIDATE, not the unlikely
- *      option it was previously framed as. Whether that reuses the existing
- *      `PUB_SalesForce` task/endpoint as-is or requires a new one
- *      provisioned for Salesforce-originated files, what credential/auth it
- *      needs, and the exact endpoint/API shape all remain unconfirmed and
- *      need a real answer from the AFT/MOVEit/integration team before
- *      implementation. `uploadChannelFile()` below assumes a generic "PUT
- *      raw file body to a folder-scoped HTTPS endpoint" shape as a
- *      PLACEHOLDER ONLY, standing in for whatever that real hand-off point
- *      turns out to be — do not treat `MOVEIT_NAMED_CREDENTIAL`/
- *      `MOVEIT_UPLOAD_PATH` as a confirmed API contract, and do not replace
- *      them with a different but equally invented shape without that
- *      confirmation.
+ *  (2) NO SFTP FROM APEX. Apex has no raw socket / SFTP client — only
+ *      HTTP(S) callouts — and it cannot write to a Windows/mainframe-local
+ *      file share the way the real Stage 1 AFT job does. The ENDPOINT SHAPE
+ *      is now confirmed (see fourth correction above): Named Credential
+ *      `callout:MOVEit_Server`, `POST /api/v1/folders/{folderId}/files`,
+ *      multipart/form-data with `source`/`dest`/`file` parts. What remains
+ *      UNCONFIRMED for OUR SMS/Push/Email/CAU channels specifically:
+ *        - the real `folderId` for our pipeline (the reference example's
+ *          folder belongs to an unrelated integration),
+ *        - the real `source`/`dest` path VALUES our channels should send
+ *          (the reference example's values — `%%PGPTemp.\MRD\aaa1ACE.in` /
+ *          `/Users/Zipxmtm_CA_to_telematch/Transmit/` — are for that
+ *          unrelated integration, not ours; do not reuse them literally),
+ *        - whether this endpoint is the SAME one the existing Stage 1/Stage
+ *          2 AFT jobs feed into, or a parallel route that needs its own
+ *          provisioning for Salesforce-originated files.
+ *      Get these three answers from the AFT/MOVEit/integration team before
+ *      treating `MOVEIT_FOLDER_ID` and the `source`/`dest` placeholders in
+ *      `buildMoveitUploadRequest()` below as anything but placeholders.
  *
  * FILE FORMAT: per docs/cobol-legacy/*.md, the legacy programs did NOT use
  * one consistent format — `MD021EX` wrote comma-delimited CSV
@@ -153,21 +171,23 @@ public with sharing class NotificationGatewayService {
         public String errorMessage;
     }
 
-    // UNRESOLVED — placeholder Named Credential name, standing in for
-    // whatever the real AFT/MOVEit pipeline hand-off point turns out to be.
-    // Per the real two-stage AFT job config and the user-confirmed update
-    // that MOVEit itself is capable of PGP encryption (see class header,
-    // constraint 2, and docs/salesforce-design/moveit-aft-reference.md), a
-    // direct MOVEit-exposed HTTPS endpoint — with MOVEit's own automation
-    // applying PGP encryption after this upload — is now the leading
-    // candidate. Confirm the real hand-off target (endpoint, auth, and
-    // whether a new task/folder needs provisioning) with the AFT/MOVEit/
-    // integration team before implementation.
-    private static final String MOVEIT_NAMED_CREDENTIAL = 'callout:MOVEit_MFT';
+    // CONFIRMED endpoint shape (see class header, fourth correction) via a
+    // real working example elsewhere in this org (AMSMoveitDynamicRouter).
+    // The Named Credential name itself is a placeholder pending confirmation
+    // that this org's actual Named Credential for that class is literally
+    // named "MOVEit_Server" (very likely, since the example class references
+    // it directly, but the example wasn't confirmed to be the SAME Named
+    // Credential record used elsewhere) — verify in Setup before relying on
+    // it.
+    private static final String MOVEIT_NAMED_CREDENTIAL = 'callout:MOVEit_Server';
 
-    // UNRESOLVED — placeholder upload path/shape; see class header,
-    // constraint 2. Do not treat this as a confirmed API contract.
-    private static final String MOVEIT_UPLOAD_PATH = '/api/v1/folders/UNCONFIRMED_FOLDER_ID/files';
+    // UNRESOLVED — real folderId, source path, and dest path for OUR
+    // channels; see class header, constraint 2. The reference example's own
+    // values belong to a different, unrelated integration and must NOT be
+    // reused literally.
+    private static final String MOVEIT_FOLDER_ID = 'UNCONFIRMED_FOLDER_ID';
+    private static final String MOVEIT_SOURCE_PATH = 'UNCONFIRMED_SOURCE_PATH';
+    private static final String MOVEIT_DEST_PATH = 'UNCONFIRMED_DEST_PATH';
 
     // Real, confirmed CURRENT column layouts, from actual sample output
     // files (see docs/salesforce-design/moveit-aft-reference.md "Real
@@ -344,13 +364,8 @@ public with sharing class NotificationGatewayService {
                 + Datetime.now().format('yyyyMMdd_HHmmss') + '.' + extension;
 
         try {
-            HttpRequest req = new HttpRequest();
-            req.setEndpoint(MOVEIT_NAMED_CREDENTIAL + MOVEIT_UPLOAD_PATH
-                    + '?fileName=' + EncodingUtil.urlEncode(result.fileName, 'UTF-8'));
-            req.setMethod('PUT');
-            req.setHeader('Content-Type', delimiter == ',' ? 'text/csv' : 'text/plain');
-            req.setBodyAsBlob(Blob.valueOf(fileBody));
-            req.setTimeout(120000);
+            HttpRequest req = buildMoveitUploadRequest(result.fileName, fileBody,
+                    delimiter == ',' ? 'text/csv' : 'text/plain');
 
             Http http = new Http();
             HttpResponse res = http.send(req);
@@ -366,6 +381,47 @@ public with sharing class NotificationGatewayService {
             result.errorMessage = ex.getMessage();
         }
         return result;
+    }
+
+    /**
+     * Builds the confirmed MOVEit upload request shape (see class header,
+     * fourth correction): POST multipart/form-data with source/dest/file
+     * parts to /api/v1/folders/{folderId}/files via the MOVEit_Server Named
+     * Credential.
+     *
+     * Deliberately builds the ENTIRE multipart body as one String, then
+     * converts to a Blob exactly once — this sidesteps the base64-
+     * concatenation bug found in the reference example (see class header):
+     * that approach base64-encoded the header text, file bytes, and footer
+     * text SEPARATELY and concatenated the encoded strings, which does not
+     * reconstruct the original bytes correctly unless every piece before
+     * the last has a byte length that's an exact multiple of 3. Building one
+     * String first is safe here because every channel's file content is
+     * plain text (CSV/semicolon-delimited) — never true binary. A channel
+     * that ever needed real binary content would need different handling,
+     * not this shortcut.
+     */
+    @TestVisible
+    private HttpRequest buildMoveitUploadRequest(String fileName, String fileBody, String contentType) {
+        String boundary = '----MOVEitBoundary' + Datetime.now().getTime();
+
+        String body = '--' + boundary + '\r\n'
+                + 'Content-Disposition: form-data; name="source"\r\n\r\n' + MOVEIT_SOURCE_PATH + '\r\n'
+                + '--' + boundary + '\r\n'
+                + 'Content-Disposition: form-data; name="dest"\r\n\r\n' + MOVEIT_DEST_PATH + '\r\n'
+                + '--' + boundary + '\r\n'
+                + 'Content-Disposition: form-data; name="file"; filename="' + fileName + '"\r\n'
+                + 'Content-Type: ' + contentType + '\r\n\r\n'
+                + fileBody + '\r\n'
+                + '--' + boundary + '--\r\n';
+
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint(MOVEIT_NAMED_CREDENTIAL + '/api/v1/folders/' + MOVEIT_FOLDER_ID + '/files');
+        req.setMethod('POST');
+        req.setHeader('Content-Type', 'multipart/form-data; boundary=' + boundary);
+        req.setBodyAsBlob(Blob.valueOf(body));
+        req.setTimeout(120000);
+        return req;
     }
 
     /**

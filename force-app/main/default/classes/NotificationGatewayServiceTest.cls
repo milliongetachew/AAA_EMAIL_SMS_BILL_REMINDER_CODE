@@ -3,16 +3,18 @@
  * Demonstrates the intended queue-then-flush pattern for
  * NotificationGatewayService: queueSms()/queuePush()/queueEmail() never
  * perform a callout (so they need no HTTP mock), and flush() performs at
- * most one callout per channel that has queued rows. ASSUMPTION: the mock
+ * most one callout per channel that has queued rows. The mock in most tests
  * below intercepts the HTTP call itself, so it does not depend on the real
- * endpoint shape flush() ultimately calls — which, per the real two-stage
- * AFT/MOVEit job configuration (see
- * docs/salesforce-design/moveit-aft-reference.md and the class header on
- * NotificationGatewayService), is UNRESOLVED. Since MOVEit itself is
- * confirmed capable of PGP encryption, a direct MOVEit-exposed HTTPS
- * endpoint (with MOVEit's own automation applying PGP encryption after the
- * upload) is now the leading candidate for that endpoint shape, though the
- * exact path/auth is still unconfirmed.
+ * endpoint shape flush() ultimately calls. That shape is now CONFIRMED
+ * (Named Credential `MOVEit_Server`, multipart/form-data POST to
+ * `/api/v1/folders/{folderId}/files` — see NotificationGatewayService's
+ * class header, fourth correction) via a real example elsewhere in the org;
+ * what's still unconfirmed is the real folderId/source/dest values for our
+ * channels specifically. testBuildMoveitUploadRequest_producesWellFormedMultipartBody
+ * below verifies the multipart body itself is constructed correctly — the
+ * reference example this pattern came from had a real bug there (base64-
+ * concatenating separately-encoded pieces, which corrupts arbitrary-length
+ * content), which this implementation avoids by building one String first.
  */
 @isTest
 private class NotificationGatewayServiceTest {
@@ -110,6 +112,36 @@ private class NotificationGatewayServiceTest {
         System.assertEquals(false, results[0].success,
                 'A 5xx response from the MOVEit upload should be surfaced as a failed result, not an exception');
         System.assert(results[0].errorMessage.contains('500'), 'Error message should include the HTTP status code');
+    }
+
+    @isTest
+    static void testBuildMoveitUploadRequest_producesWellFormedMultipartBody() {
+        NotificationGatewayService gateway = new NotificationGatewayService('MD021EX');
+
+        Test.startTest();
+        HttpRequest req = gateway.buildMoveitUploadRequest('MD021EX_SMS_20260904_120000.csv',
+                'SubscriberKey,MobileNumber\n123,+15551234567\n', 'text/csv');
+        Test.stopTest();
+
+        System.assertEquals('POST', req.getMethod());
+        System.assert(req.getEndpoint().endsWith('/api/v1/folders/UNCONFIRMED_FOLDER_ID/files'),
+                'Endpoint should hit the confirmed folder-scoped upload path');
+        String contentTypeHeader = req.getHeader('Content-Type');
+        System.assert(contentTypeHeader.startsWith('multipart/form-data; boundary='));
+        String boundary = contentTypeHeader.substringAfter('boundary=');
+
+        String body = req.getBodyAsBlob().toString();
+        // A well-formed multipart body round-trips through Blob.toString()
+        // with every original byte intact — this is exactly what the
+        // reference example's base64-concatenation bug would have broken
+        // for content whose length isn't a multiple of 3.
+        System.assert(body.contains('name="source"'), 'Body must include the source part');
+        System.assert(body.contains('name="dest"'), 'Body must include the dest part');
+        System.assert(body.contains('name="file"; filename="MD021EX_SMS_20260904_120000.csv"'),
+                'Body must include the file part with the correct filename');
+        System.assert(body.contains('SubscriberKey,MobileNumber\n123,+15551234567\n'),
+                'File content must appear intact and unmodified in the body');
+        System.assert(body.endsWith('--' + boundary + '--\r\n'), 'Body must end with the closing boundary');
     }
 
     @isTest
