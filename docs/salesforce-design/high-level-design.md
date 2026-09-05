@@ -228,12 +228,19 @@ COBOL program.
 > Credential, and MOVEit's own automation applies PGP encryption and
 > forwards the result onward** (very plausibly still to SFMC) — this is now
 > the leading candidate for the hand-off mechanism, not just one of several
-> equally-uncertain options. **Still open, and still needs a real answer,
-> not a guess:** the specific MOVEit endpoint/API shape Salesforce would
-> call, what credential/auth it needs, and whether a *new* MOVEit task/
-> folder needs to be provisioned for Salesforce-originated files (reusing
-> the exact `PUB_SalesForce` task as-is vs. a parallel one) — see
-> `moveit-aft-reference.md` for the full framing.
+> equally-uncertain options.
+>
+> **Fourth correction (2026-09-04): the endpoint SHAPE is now confirmed**,
+> via a real, working Apex class from elsewhere in this org
+> (`AMSMoveitDynamicRouter`, a different unrelated data flow — see
+> `moveit-aft-reference.md` for the full evidence): Named Credential
+> `callout:MOVEit_Server`, `POST /api/v1/folders/{folderId}/files`,
+> `multipart/form-data` with `source`/`dest`/`file` parts.
+> `NotificationGatewayService.buildMoveitUploadRequest()` implements this
+> shape directly. **Still open, narrower than before:** the real `folderId`
+> and `source`/`dest` path values for our SMS/Push/Email/CAU channels
+> specifically — the reference class's own values belong to its unrelated
+> integration and must not be reused literally.
 
 All outbound channels are unified behind `NotificationGatewayService`
 (Deliverable 3), which now implements a **queue-then-flush** pattern
@@ -269,20 +276,17 @@ respected, not worked around:
   from is the open hand-off question described in the next bullet.
 - **Apex has no SFTP client** — only HTTP(S) callouts (no raw sockets), and
   it cannot write to a Windows/mainframe-local file share the way the
-  Stage 1 AFT job does. **UNRESOLVED**: exactly how Apex hands its
-  plaintext extract off to the AFT/MOVEit pipeline has not been confirmed.
-  Since MOVEit is confirmed capable of PGP encryption itself (see the
-  third correction above), a direct HTTPS upload to a MOVEit-exposed
-  endpoint — with MOVEit's own automation applying PGP encryption after
-  Apex's plaintext upload — is now the leading candidate, not the unlikely
-  option it was previously framed as. Whether that reuses the existing
-  `PUB_SalesForce` task/endpoint as-is or requires a new one provisioned
-  for Salesforce-originated files, what credential/auth it needs, and the
-  exact endpoint/API shape all remain unconfirmed and need a real answer
-  from the AFT/MOVEit/integration team before implementation;
-  `NotificationGatewayService` implements a placeholder HTTPS upload shape
-  pending that confirmation — see its class header for details, and do not
-  treat that placeholder as a confirmed MOVEit API contract.
+  Stage 1 AFT job does. The endpoint SHAPE is now confirmed (see fourth
+  correction above): Named Credential `callout:MOVEit_Server`,
+  `POST /api/v1/folders/{folderId}/files`, multipart/form-data with
+  `source`/`dest`/`file` parts — `NotificationGatewayService.
+  buildMoveitUploadRequest()` implements this directly. **Still
+  unresolved**: the real `folderId` and `source`/`dest` path values for our
+  channels specifically, and whether a new task/folder needs provisioning
+  for Salesforce-originated files versus reusing an existing one — need a
+  real answer from the AFT/MOVEit/integration team before treating
+  `MOVEIT_FOLDER_ID`/`MOVEIT_SOURCE_PATH`/`MOVEIT_DEST_PATH` in
+  `NotificationGatewayService` as anything but placeholders.
 
 **File format**: the legacy programs did not use one consistent flat-file
 format — `MD021EX` wrote comma-delimited CSV (`OUT-FILE`/`MD021OP`),
@@ -442,17 +446,27 @@ be measured against (see §6).
   timestamped object — hence `Correspondence_Log__c` (deliberately not
   named `Correspondence__c`, to avoid colliding in name with the existing
   Asset field). `CorrespondenceLogger.flush()` writes to both.
-- **The exact MOVEit API/product surface is unconfirmed.** §4's outbound
-  design assumes an HTTPS "upload file" callout via Named Credential, but
-  whether that is MOVEit Transfer's REST API, a MOVEit Automation task
-  trigger, or an integration-platform (e.g. MuleSoft) hop that itself talks
-  SFTP/MOVEit on Salesforce's behalf has not been confirmed. The Named
-  Credential name, endpoint path, HTTP method, auth scheme, and
-  request/response payload shape in `NotificationGatewayService` are all
-  placeholders pending that confirmation.
+- **The MOVEit endpoint SHAPE is confirmed; the real values are not.** A
+  real, working Apex class from elsewhere in this org
+  (`AMSMoveitDynamicRouter`) confirms `POST /api/v1/folders/{folderId}/files`
+  via `callout:MOVEit_Server`, multipart/form-data with `source`/`dest`/
+  `file` parts — `NotificationGatewayService.buildMoveitUploadRequest()`
+  implements this directly. What's still unconfirmed: the real `folderId`
+  and `source`/`dest` values for our channels (the reference class's own
+  values belong to an unrelated integration and must not be reused
+  literally), and whether `callout:MOVEit_Server` is literally this org's
+  Named Credential name. **Also worth flagging regardless of adoption
+  here**: that reference class's multipart-body helper has a real bug —
+  it base64-encodes header/file/footer text separately and concatenates
+  the encoded strings before decoding, which does not reconstruct
+  arbitrary-length content correctly and would corrupt the uploaded file
+  in practice. `NotificationGatewayService` avoids this by building the
+  whole multipart body as one String first (safe since all our content is
+  plain text). Worth surfacing to whoever owns `AMSMoveitDynamicRouter` in
+  case it's deployed anywhere for real.
 - **The PGP responsibility boundary is assumed, not confirmed.** This
-  design assumes MOVEit Automation applies PGP encryption server-side
-  after Salesforce uploads a plaintext file — Apex has no native OpenPGP
+  design assumes MOVEit's own automation applies PGP encryption after
+  Salesforce uploads a plaintext file — Apex has no native OpenPGP
   implementation and is not expected to produce PGP-encrypted output
   itself. Confirm this is actually how the target MOVEit environment is
   configured before relying on it; if Salesforce is required to hand off
