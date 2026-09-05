@@ -1,5 +1,16 @@
 # Revenue Cloud High-Level Design — Membership Renewal / Billing Communication Migration
 
+## Document Version History
+
+| Version | Date | Summary |
+|---|---|---|
+| 1.0 | 2026-08-30 | Initial draft — illustrative Salesforce Revenue Cloud design assuming the CPQ (`SBQQ`)/Billing (`blng`) managed packages, written before any real org or pipeline data was available. |
+| 1.1 | 2026-08-31 | First correction — outbound delivery corrected to a file-based MOVEit/PGP hand-off, not a live per-message provider API. |
+| 2.0 | 2026-09-01 | Major correction — replaced the illustrative CPQ/Billing model with the real, field-verified ACE org schema (native Revenue Lifecycle Management; members modeled as Person Accounts, not Contacts). See `data-dictionary-reference.md`. |
+| 2.1 | 2026-09-01 | Second correction — outbound delivery corrected again to the real two-stage AFT/MOVEit pipeline (MOVEit confirmed as a relay, not a single-stage encryptor). See `moveit-aft-reference.md`. |
+| 2.2 | 2026-09-01 | Third correction — confirmed MOVEit itself is capable of applying PGP encryption, making direct Apex-to-MOVEit upload the leading hand-off candidate. |
+| 2.3 | 2026-09-05 | Fourth correction — confirmed the real MOVEit upload endpoint shape (Named Credential, path, multipart structure) via a working example class found elsewhere in the org. |
+
 > **Ground truth**: `docs/salesforce-design/data-dictionary-reference.md` is
 > a field-level audit of the actual target org (real automation, real
 > record counts, cross-checked against live flows/Apex) and **supersedes
